@@ -156,7 +156,7 @@ class BotTests(unittest.TestCase):
             with patch('app.main.httpx.Client') as client:
                 client.return_value.__enter__.return_value.post.side_effect = [
                     route_response, search_response]
-                result = Bot.reply(self.bot, [{'role': 'user', 'content': '查一下最新 AI 消息'}])
+                result = Bot.reply(self.bot, [{'role': 'user', 'content': '介紹 Project Foo'}])
         self.assertEqual(result, '搜尋結果')
         calls = client.return_value.__enter__.return_value.post.call_args_list
         first_tools = calls[0].kwargs['json']['tools']
@@ -164,6 +164,20 @@ class BotTests(unittest.TestCase):
                          {'search_web', 'generate_image'})
         self.assertFalse(any('google_search' in tool for tool in first_tools))
         self.assertEqual(calls[1].kwargs['json']['tools'], [{'google_search': {}}])
+
+    def test_explicit_fresh_query_goes_directly_to_search(self):
+        from app.main import Bot
+        with patch.dict(os.environ, {'BASE_URL': 'https://model.example/v1', 'API_KEY': 'secret',
+                                     'MODEL': 'test-model', 'WEB_SEARCH': 'true',
+                                     'IMAGE_MODEL': 'image-model'}):
+            with patch('app.main.httpx.Client') as client:
+                response = client.return_value.__enter__.return_value.post.return_value
+                response.json.return_value = {'choices': [{'message': {'content': '今天是 9 月 24 日'}}]}
+                result = Bot.reply(self.bot, [{'role': 'user', 'content': '今日係幾月幾日'}])
+                payload = client.return_value.__enter__.return_value.post.call_args.kwargs['json']
+        self.assertEqual(result, '今天是 9 月 24 日')
+        self.assertEqual(payload['tools'], [{'google_search': {}}])
+        self.assertNotIn('tool_choice', payload)
 
     def test_model_http_error_logs_status_and_body(self):
         from app.main import Bot

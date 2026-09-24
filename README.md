@@ -72,7 +72,7 @@ docker compose up -d --build --force-recreate
 當使用 CLIProxyAPI 的 OpenAI 相容 `/v1/chat/completions` 端點時，把 `.env` 的
 `WEB_SEARCH` 設為 `true`。Bot 會在請求中加入 CLIProxyAPI 支援的
 `{"google_search": {}}` 工具；CLIProxyAPI 會把它轉成 Gemini 原生的
-`googleSearch` grounding。模型會自行判斷問題是否需要搜尋；提問時可明確說「請上網查詢最新資料」。
+`googleSearch` grounding。包含「搜尋」、「今日」、「天氣」、「最新」等明確即時意圖的問題會直接使用搜尋；其他問題由模型判斷。提問時可明確說「請上網查詢最新資料」。
 
 請使用支援 Google Search grounding 的 Gemini 模型，並更新到較新的 CLIProxyAPI 版本。搜尋是 Gemini 伺服器端工具，不會以一般 `tool_calls` 回到 Bot，完成搜尋後會直接回傳整理好的文字答案。若同時設定 `IMAGE_MODEL`，Bot 會先讓文字模型在搜尋與生圖之間選擇，再用另一個只含 Google Search 的請求搜尋，以避開部分 Gemini／Antigravity 路由不允許內建工具與 function calling 混用的限制。若需要穩定取得 `groundingMetadata` 的來源 URL，請改走 Gemini 原生 `generateContent` 介面；不同 CLIProxyAPI 版本對 OpenAI 相容回應中的引用欄位支援不同。
 

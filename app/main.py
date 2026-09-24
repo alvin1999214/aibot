@@ -38,6 +38,33 @@ WEB_SEARCH_TOOL = {
     },
 }
 
+
+def latest_user_text(messages):
+    for message in reversed(messages):
+        if message.get('role') == 'user' and isinstance(message.get('content'), str):
+            return message['content']
+    return ''
+
+
+def requests_image(text):
+    lowered = text.casefold()
+    return any(marker in lowered for marker in (
+        '生成圖片', '生成一張', '產生圖片', '產生一張', '生圖', '畫一張', '畫張',
+        '繪製', '做一張圖', '做張圖', 'generate an image', 'generate image',
+        'create an image', 'create image', 'draw an image', 'draw a picture',
+    ))
+
+
+def requests_web_search(text):
+    lowered = text.casefold()
+    return any(marker in lowered for marker in (
+        '搜尋', '搜索', '查詢', '查一下', '上網查', '搵資料', '今日', '今天', '而家',
+        '現在', '最新', '即時', '實時', '天氣', '日期', '幾月幾日', '幾點', '新聞',
+        '股價', '匯率', '賽果', 'search the web', 'search online', 'look up', 'today',
+        'current', 'latest', 'weather', 'news', 'exchange rate', 'stock price',
+    ))
+
+
 log = logging.getLogger('bot')
 log.setLevel(logging.INFO)
 if not log.handlers:
@@ -131,15 +158,20 @@ class Bot:
         system = os.getenv('SYSTEM_PROMPT', '請用繁體中文簡潔回答群組問題。')
         web_search = os.getenv('WEB_SEARCH', '').strip().lower() in {'1', 'true', 'yes', 'on'}
         image_model = os.getenv('IMAGE_MODEL', '').strip()
+        latest = latest_user_text(messages)
+        if web_search and requests_web_search(latest) and not requests_image(latest):
+            return self.search_web(messages, latest[:4000])
         if web_search:
             if image_model:
                 system += (
-                    '\n需要即時、最新或網路上的資料時，呼叫 search_web；'
+                    '\n你具備網路搜尋能力。需要即時、最新或網路上的資料時，呼叫 search_web；'
+                    '不可聲稱自己無法連網。'
                     '若回應中有可用來源資訊，請在回答中簡短列出。'
                 )
             else:
                 system += (
-                    '\n需要即時、最新或網路上的資料時，使用 Google Search；'
+                    '\n你具備網路搜尋能力。需要即時、最新或網路上的資料時，使用 Google Search；'
+                    '不可聲稱自己無法連網。'
                     '若回應中有可用來源資訊，請在回答中簡短列出。'
                 )
         payload = {'model': os.environ['MODEL'], 'messages': [
@@ -192,7 +224,8 @@ class Bot:
     def search_web(self, messages, query):
         system = os.getenv('SYSTEM_PROMPT', '請用繁體中文簡潔回答群組問題。')
         system += (
-            '\n本次必須使用 Google Search 查詢後再回答。'
+            '\n你具備網路搜尋能力。本次必須使用 Google Search 查詢後再回答，'
+            '不可聲稱自己無法連網。'
             '請根據搜尋結果簡潔回答；若回應中有可用來源資訊，請列出來源。'
             f'\n搜尋主題：{query}'
         )
