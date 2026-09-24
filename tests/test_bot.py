@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import Mock, patch
 
+import httpx
+
 from app.core import Store, mentioned
 
 
@@ -139,6 +141,20 @@ class BotTests(unittest.TestCase):
                 self.assertEqual(Bot.reply(self.bot, [{'role': 'user', 'content': '查一下最新消息'}]), '已查詢')
                 payload = client.return_value.__enter__.return_value.post.call_args.kwargs['json']
                 self.assertIn({'google_search': {}}, payload['tools'])
+
+    def test_model_http_error_logs_status_and_body(self):
+        from app.main import Bot
+        request = httpx.Request('POST', 'https://model.example/v1/chat/completions')
+        failed = httpx.Response(400, text='invalid google_search tool', request=request)
+        with patch.dict(os.environ, {'BASE_URL': 'https://model.example/v1', 'API_KEY': 'secret',
+                                     'MODEL': 'test-model', 'WEB_SEARCH': 'true'}):
+            with patch('app.main.httpx.Client') as client, self.assertLogs('bot', 'WARNING') as logs:
+                client.return_value.__enter__.return_value.post.return_value = failed
+                with self.assertRaises(httpx.HTTPStatusError):
+                    Bot.reply(self.bot, [{'role': 'user', 'content': '查一下最新消息'}])
+        self.assertIn('status=400', '\n'.join(logs.output))
+        self.assertIn('invalid google_search tool', '\n'.join(logs.output))
+        self.assertNotIn('secret', '\n'.join(logs.output))
 
     def test_import_saves_session_and_releases_lock(self):
         client = Mock(user_id=10)

@@ -35,6 +35,17 @@ def conversation_log(event, **fields):
     log.info('%s', json.dumps({'event': event, **fields}, ensure_ascii=False))
 
 
+def raise_for_model_status(response):
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError:
+        # Provider errors usually contain the actionable cause. Keep the log bounded
+        # and on one line; request headers (including the API key) are never logged.
+        body = response.text[:2000].replace('\r', '\\r').replace('\n', '\\n')
+        log.warning('Model API rejected request: status=%s body=%s', response.status_code, body)
+        raise
+
+
 class Bot:
     def __init__(self):
         self.data = Path(os.getenv('DATA_DIR', './data'))
@@ -125,7 +136,7 @@ class Bot:
             response = http.post(os.environ['BASE_URL'].rstrip('/') + '/chat/completions',
                 headers={'Authorization': 'Bearer ' + os.environ['API_KEY']},
                 json=payload)
-            response.raise_for_status()
+            raise_for_model_status(response)
             message = response.json()['choices'][0]['message']
         calls = message.get('tool_calls') or []
         if calls:
@@ -157,7 +168,7 @@ class Bot:
                         'image_size': os.getenv('IMAGE_SIZE', '1K'),
                     },
                 })
-            response.raise_for_status()
+            raise_for_model_status(response)
             message = response.json()['choices'][0]['message']
         return GeneratedImage(prompt=prompt, jpeg=decode_image(message))
 
