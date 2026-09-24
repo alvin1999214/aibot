@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from PIL import Image
 
-from app.images import GeneratedImage, decode_image
+from app.images import GeneratedImage, decode_image, normalize_reference_image
 from app.main import Bot
 
 
@@ -47,6 +47,13 @@ class ImageTests(unittest.TestCase):
     def test_image_size_limits(self):
         with patch('app.images.MAX_IMAGE_BYTES', 1), self.assertRaises(ValueError):
             decode_image({'images': [{'image_url': {'url': inline_image()}}]})
+
+    def test_reference_image_is_normalized_to_jpeg(self):
+        raw = base64.b64decode(inline_image().partition(',')[2])
+        with Image.open(BytesIO(normalize_reference_image(raw))) as image:
+            self.assertEqual(image.format, 'JPEG')
+            self.assertEqual(image.mode, 'RGB')
+            self.assertEqual(image.size, (32, 24))
 
 
 class ImageBotTests(unittest.TestCase):
@@ -159,3 +166,57 @@ class ImageBotTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.bot.reply([{'role': 'user', 'content': 'draw a cat'}])
                 generate.assert_not_called()
+
+    def test_group_profile_picture_is_sent_as_image_reference(self):
+        chat = Mock()
+        chat.json.return_value = {'choices': [{'message': {'tool_calls': [{
+            'function': {
+                'name': 'generate_image',
+                'arguments': '{"prompt":"變成一隻狐狸","reference_username":"alice"}',
+            },
+        }]}}]}
+        generated = Mock()
+        generated.json.return_value = {'choices': [{'message': {
+            'images': [{'image_url': {'url': inline_image()}}],
+        }}]}
+        reference = b'normalized-profile-jpeg'
+        participants = [{
+            'id': '20', 'username': 'alice', 'full_name': 'Alice',
+            'profile_pic_url': 'https://scontent.cdninstagram.com/alice.jpg',
+        }]
+        with patch('app.main.httpx.Client') as client, \
+                patch.object(self.bot, 'download_profile_picture', return_value=reference) as download:
+            client.return_value.__enter__.return_value.post.side_effect = [chat, generated]
+            result = self.bot.reply(
+                [{'role': 'user', 'content': '@bot 根據我的頭像生成一隻動物'}],
+                participants=participants, sender_id='20')
+        self.assertIsInstance(result, GeneratedImage)
+        download.assert_called_once_with('https://scontent.cdninstagram.com/alice.jpg')
+        image_payload = client.return_value.__enter__.return_value.post.call_args_list[1].kwargs['json']
+        content = image_payload['messages'][0]['content']
+        self.assertEqual(content[0]['type'], 'text')
+        self.assertEqual(content[1]['type'], 'image_url')
+        self.assertEqual(content[1]['image_url']['url'],
+                         'data:image/jpeg;base64,' + base64.b64encode(reference).decode('ascii'))
+
+    def test_profile_reference_must_be_a_group_member(self):
+        with patch('app.main.httpx.Client') as client, \
+                patch.object(self.bot, 'download_profile_picture') as download:
+            client.return_value.__enter__.return_value.post.return_value.json.return_value = {
+                'choices': [{'message': {'tool_calls': [{
+                    'function': {
+                        'name': 'generate_image',
+                        'arguments': '{"prompt":"新頭像","reference_username":"stranger"}',
+                    },
+                }]}}]}
+            result = self.bot.reply(
+                [{'role': 'user', 'content': '@bot 根據 @stranger 生成一個頭像'}],
+                participants=[{'id': '20', 'username': 'alice', 'full_name': 'Alice',
+                               'profile_pic_url': 'https://scontent.cdninstagram.com/alice.jpg'}],
+                sender_id='20')
+        self.assertIn('找不到群組成員 @stranger', result)
+        download.assert_not_called()
+
+    def test_profile_picture_url_rejects_non_instagram_hosts(self):
+        with self.assertRaises(ValueError):
+            self.bot.download_profile_picture('https://example.com/avatar.jpg')

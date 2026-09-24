@@ -1,4 +1,5 @@
 import hmac
+import base64
 import json
 import logging
 import os
@@ -7,6 +8,7 @@ import threading
 import tempfile
 import time
 from contextlib import asynccontextmanager, contextmanager
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -19,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .core import Store, mentioned
-from .images import GeneratedImage, IMAGE_TOOL, decode_image
+from .images import GeneratedImage, IMAGE_TOOL, decode_image, normalize_reference_image
 
 WEB_SEARCH_TOOL = {
     'type': 'function',
@@ -52,6 +54,13 @@ def requests_image(text):
         '生成圖片', '生成一張', '產生圖片', '產生一張', '生圖', '畫一張', '畫張',
         '繪製', '做一張圖', '做張圖', 'generate an image', 'generate image',
         'create an image', 'create image', 'draw an image', 'draw a picture',
+    ))
+
+
+def requests_profile_reference(text):
+    lowered = text.casefold()
+    return any(marker in lowered for marker in (
+        '頭像', '大頭貼', '個人照片', 'profile pic', 'profile picture', 'avatar',
     ))
 
 
@@ -197,7 +206,8 @@ class Bot:
         finally:
             self.lock.release()
 
-    def reply(self, messages):
+    def reply(self, messages, participants=None, sender_id=None):
+        participants = participants or []
         system = os.getenv('SYSTEM_PROMPT', '請用繁體中文簡潔回答群組問題。')
         web_search = os.getenv('WEB_SEARCH', '').strip().lower() in {'1', 'true', 'yes', 'on'}
         image_model = os.getenv('IMAGE_MODEL', '').strip()
@@ -228,7 +238,18 @@ class Bot:
             payload['messages'][0]['content'] += (
                 '\n當最新使用者要求生成或畫圖片時，呼叫 generate_image，'
                 '把上下文整理為完整的圖片描述。工具會直接把圖片發送至群組；'
-                '一般聊天不需呼叫工具。每次最多生成一張圖片。')
+                '一般聊天不需呼叫工具。每次最多生成一張圖片。'
+                '若要求根據群組成員頭像生成，必須在 reference_username 填入該成員的精確 username。')
+            member_descriptions = [
+                f"@{member['username']} ({member.get('full_name') or '未設定名稱'})"
+                for member in participants if member.get('username')
+            ]
+            sender = next((member for member in participants
+                           if member.get('id') == str(sender_id)), None)
+            if member_descriptions:
+                payload['messages'][0]['content'] += '\n目前群組成員：' + '、'.join(member_descriptions)
+            if sender and sender.get('username'):
+                payload['messages'][0]['content'] += f"\n最新發言者是 @{sender['username']}。"
             # Gemini/Antigravity can reject a built-in search tool mixed with
             # function declarations. Route search as a function first, then make
             # a separate request containing only the server-side search tool.
@@ -252,6 +273,24 @@ class Bot:
                 prompt = arguments.get('prompt')
                 if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
                     raise ValueError('Invalid image prompt')
+                reference_username = arguments.get('reference_username')
+                if reference_username is not None and not isinstance(reference_username, str):
+                    raise ValueError('Invalid reference username')
+                reference = None
+                if reference_username or requests_profile_reference(latest):
+                    reference = self.resolve_profile_reference(
+                        latest, participants, sender_id, reference_username)
+                    if reference is None:
+                        target = reference_username.strip().lstrip('@') if reference_username else '該使用者'
+                        return f'找不到群組成員 @{target} 的頭像，請確認 username 後再試一次。'
+                    if not reference.get('profile_pic_url'):
+                        return f"群組成員 @{reference['username']} 暫時沒有可用的頭像。"
+                    try:
+                        reference_image = self.download_profile_picture(reference['profile_pic_url'])
+                    except Exception as exc:
+                        log.warning('Profile picture download failed: %s', type(exc).__name__)
+                        return f"暫時無法取得 @{reference['username']} 的頭像，請稍後再試。"
+                    return self.generate_image(prompt.strip(), reference_image=reference_image)
                 return self.generate_image(prompt.strip())
             if function['name'] == 'search_web' and web_search:
                 query = arguments.get('query')
@@ -263,6 +302,59 @@ class Bot:
         if not isinstance(text, str) or not text.strip():
             raise ValueError('Empty model response')
         return text.strip()[:900]
+
+    def resolve_profile_reference(self, latest, participants, sender_id, requested_username=None):
+        by_username = {
+            member.get('username', '').casefold(): member
+            for member in participants if member.get('username')
+        }
+        lowered = latest.casefold()
+        if any(marker in lowered for marker in (
+                '我的頭像', '我嘅頭像', '我的大頭貼', 'my avatar', 'my profile pic',
+                'my profile picture')):
+            return next((member for member in participants
+                         if member.get('id') == str(sender_id)), None)
+        for username, member in by_username.items():
+            if f'@{username}' in lowered and username != (self.username or '').casefold():
+                return member
+        if requested_username and requested_username.strip():
+            return by_username.get(requested_username.strip().lstrip('@').casefold())
+        return None
+
+    def download_profile_picture(self, profile_pic_url):
+        current = str(profile_pic_url)
+        headers = {
+            'User-Agent': getattr(self.client, 'user_agent', 'Mozilla/5.0'),
+            'Referer': 'https://www.instagram.com/',
+        }
+        with httpx.Client(timeout=20, follow_redirects=False) as http:
+            for _ in range(4):
+                parsed = urlsplit(current)
+                host = (parsed.hostname or '').lower()
+                if parsed.scheme != 'https' or not (
+                        host == 'instagram.com' or host.endswith('.instagram.com')
+                        or host.endswith('.cdninstagram.com') or host.endswith('.fbcdn.net')):
+                    raise ValueError('Unsupported profile picture URL')
+                with http.stream('GET', current, headers=headers) as response:
+                    if response.is_redirect:
+                        location = response.headers.get('location')
+                        if not location:
+                            raise ValueError('Profile picture redirect has no location')
+                        current = urljoin(current, location)
+                        continue
+                    response.raise_for_status()
+                    content_type = response.headers.get('content-type', '').split(';', 1)[0]
+                    if not content_type.startswith('image/'):
+                        raise ValueError('Profile picture response is not an image')
+                    chunks = []
+                    size = 0
+                    for chunk in response.iter_bytes():
+                        size += len(chunk)
+                        if size > 20 * 1024 * 1024:
+                            raise ValueError('Profile picture exceeds 20 MiB')
+                        chunks.append(chunk)
+                    return normalize_reference_image(b''.join(chunks))
+        raise ValueError('Too many profile picture redirects')
 
     def search_web(self, messages, query):
         system = os.getenv('SYSTEM_PROMPT', '請用繁體中文簡潔回答群組問題。')
@@ -287,13 +379,24 @@ class Bot:
             raise ValueError('Empty web search response')
         return text.strip()[:900]
 
-    def generate_image(self, prompt):
+    def generate_image(self, prompt, reference_image=None):
+        content = prompt
+        if reference_image is not None:
+            encoded = base64.b64encode(reference_image).decode('ascii')
+            content = [
+                {'type': 'text', 'text': (
+                    prompt + '\nUse the provided profile picture as a visual reference. '
+                    'Preserve recognizable visual traits while following the requested transformation.')},
+                {'type': 'image_url', 'image_url': {
+                    'url': 'data:image/jpeg;base64,' + encoded,
+                }},
+            ]
         with httpx.Client(timeout=180) as http:
             response = http.post(os.environ['BASE_URL'].rstrip('/') + '/chat/completions',
                 headers={'Authorization': 'Bearer ' + os.environ['API_KEY']},
                 json={
                     'model': os.environ['IMAGE_MODEL'],
-                    'messages': [{'role': 'user', 'content': prompt}],
+                    'messages': [{'role': 'user', 'content': content}],
                     'modalities': ['image', 'text'],
                     'image_config': {
                         'aspect_ratio': os.getenv('IMAGE_ASPECT_RATIO', '1:1'),
@@ -321,6 +424,18 @@ class Bot:
             if not thread.is_group:
                 continue
             tid = str(thread.id)
+            participants = []
+            for user in getattr(thread, 'users', []):
+                if not getattr(user, 'username', None):
+                    continue
+                profile_pic_url = (getattr(user, 'profile_pic_url_hd', None)
+                                   or getattr(user, 'profile_pic_url', None))
+                participants.append({
+                    'id': str(user.pk),
+                    'username': user.username,
+                    'full_name': getattr(user, 'full_name', '') or '',
+                    'profile_pic_url': str(profile_pic_url) if profile_pic_url else None,
+                })
             messages = sorted(thread.messages, key=lambda m: (m.timestamp, str(m.id)))
             for message in messages:
                 body = message.text or ''
@@ -346,7 +461,8 @@ class Bot:
                                  reply_to_message_id=str(replied_to.id) if replied_to else None)
                 try:
                     with typing_activity(client, tid):
-                        answer = self.reply(context)
+                        answer = self.reply(context, participants=participants,
+                                            sender_id=str(message.user_id))
                 except Exception as exc:
                     conversation_log('conversation.model_failed', **details, error=type(exc).__name__)
                     raise

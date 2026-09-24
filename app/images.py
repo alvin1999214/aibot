@@ -14,10 +14,17 @@ IMAGE_TOOL = {
         'name': 'generate_image',
         'description': ('Generate and send one image to this Instagram group. Use only when the latest '
                         'user asks to create/draw an image. Resolve references using the conversation '
-                        'and supply a complete image prompt. This tool cannot edit uploaded images.'),
+                        'and supply a complete image prompt. When the request is based on a group '
+                        "member's avatar, set reference_username to that exact group username."),
         'parameters': {
             'type': 'object',
-            'properties': {'prompt': {'type': 'string', 'description': 'Complete description of the image to create.'}},
+            'properties': {
+                'prompt': {'type': 'string', 'description': 'Complete description of the image to create.'},
+                'reference_username': {
+                    'type': 'string',
+                    'description': 'Exact Instagram username whose group profile picture should be used as reference.',
+                },
+            },
             'required': ['prompt'],
             'additionalProperties': False,
         },
@@ -29,6 +36,22 @@ IMAGE_TOOL = {
 class GeneratedImage:
     prompt: str
     jpeg: bytes = field(repr=False)
+
+
+def normalize_reference_image(raw):
+    if not isinstance(raw, bytes) or not raw or len(raw) > MAX_IMAGE_BYTES:
+        raise ValueError('Reference image exceeds 20 MiB or is empty')
+    with Image.open(BytesIO(raw)) as source:
+        if source.width * source.height > 25_000_000:
+            raise ValueError('Reference image exceeds 25 megapixels')
+        normalized = ImageOps.exif_transpose(source)
+        normalized.thumbnail((1024, 1024))
+        rgba = normalized.convert('RGBA')
+        background = Image.new('RGB', rgba.size, 'white')
+        background.paste(rgba, mask=rgba.getchannel('A'))
+        output = BytesIO()
+        background.save(output, format='JPEG', quality=90)
+        return output.getvalue()
 
 
 def decode_image(message):

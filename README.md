@@ -82,7 +82,9 @@ Bot 開始處理模型請求後，會透過 Instagram 即時連線在該群組�
 
 設定 `IMAGE_MODEL` 後，在群組輸入 `@你的bot帳號 畫一隻穿太空衣的貓`，或直接回覆 Bot 的訊息提出畫圖要求。文字模型 `MODEL` 會根據對話決定是否呼叫 `generate_image`，整理完整提示詞，再交給 `IMAGE_MODEL` 生成一張圖片並發送到原群組。一般聊天維持文字回覆。
 
-`MODEL` 必須支援 Chat Completions 的 `tools`／`tool_calls`。圖片請求使用相同的 `/chat/completions`，帶入 `modalities: ["image", "text"]` 和 `image_config`（[介面格式參考](https://openrouter.ai/docs/api/api-reference/chat/create-a-chat-completion)）；服務需支援這些欄位及指定的圖片模型。支援 `choices[0].message.images[].image_url.url`、`content` 中的 `image_url` 區塊，或 Markdown 內的 `data:image/...;base64,...`。目前不下載外部圖片 URL，也不支援上傳圖片的辨識或編輯；若回覆先前生成的圖片要求變化，會依保存的文字提示詞重新生成。
+Bot 會讀取目前群組成員的 username、顯示名稱及頭像網址，因此也可輸入「根據我的頭像生成一隻動物」或「根據 @username 的頭像生成一個新頭像」。只有在明確要求依照頭像生成時，Bot 才會下載該群組成員的頭像並傳給圖片模型；不能引用群組外帳號。下載內容限制為 Instagram／Meta 圖片網域、20 MiB 及 2500 萬像素，並會先轉成最長邊 1024 像素的 JPEG。請讓群組成員知悉，使用此功能會把被引用成員的頭像傳送至你設定的模型 API 服務。
+
+`MODEL` 必須支援 Chat Completions 的 `tools`／`tool_calls`。圖片請求使用相同的 `/chat/completions`，帶入 `modalities: ["image", "text"]` 和 `image_config`（[介面格式參考](https://openrouter.ai/docs/api/api-reference/chat/create-a-chat-completion)）；服務需支援這些欄位、圖片輸入及指定的圖片模型。支援 `choices[0].message.images[].image_url.url`、`content` 中的 `image_url` 區塊，或 Markdown 內的 `data:image/...;base64,...`。目前不下載模型回覆的外部圖片 URL；若回覆先前生成的圖片要求變化，會依保存的文字提示詞重新生成。
 
 圖片經驗證後轉成 JPEG，最長邊縮至 1080 像素，使用 Instagram 圖片訊息發送；發送結束後清除暫存檔。原始圖片限制為 20 MiB、2500 萬像素。上下文保存圖片提示詞，logs 記錄 `media_type=image`、提示詞及發送狀態，不記錄 base64 內容。生成失敗會沿用模型錯誤退避重試；發送結果不明則不自動重送。圖片生成每次呼叫可能產生服務費用，包括失敗後重新生成。
 
