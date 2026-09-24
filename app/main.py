@@ -4,6 +4,7 @@ import logging
 import os
 from pathlib import Path
 import threading
+import tempfile
 import time
 from contextlib import asynccontextmanager
 
@@ -18,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .core import Store, mentioned
+from .images import GeneratedImage, IMAGE_TOOL, decode_image
 
 log = logging.getLogger('bot')
 log.setLevel(logging.INFO)
@@ -98,17 +100,64 @@ class Bot:
             self.lock.release()
 
     def reply(self, messages):
+        system = os.getenv('SYSTEM_PROMPT', '請用繁體中文簡潔回答群組問題。')
+        payload = {'model': os.environ['MODEL'], 'messages': [
+            {'role': 'system', 'content': system}
+        ] + messages}
+        if os.getenv('IMAGE_MODEL', '').strip():
+            payload['messages'][0]['content'] += (
+                '\n當最新使用者要求生成或畫圖片時，呼叫 generate_image，'
+                '把上下文整理為完整的圖片描述。工具會直接把圖片發送至群組；'
+                '一般聊天不需呼叫工具。每次最多生成一張圖片。')
+            payload['tools'] = [IMAGE_TOOL]
+            payload['tool_choice'] = 'auto'
         with httpx.Client(timeout=90) as http:
             response = http.post(os.environ['BASE_URL'].rstrip('/') + '/chat/completions',
                 headers={'Authorization': 'Bearer ' + os.environ['API_KEY']},
-                json={'model': os.environ['MODEL'], 'messages': [
-                    {'role': 'system', 'content': os.getenv('SYSTEM_PROMPT', '請用繁體中文簡潔回答群組問題。')}
-                ] + messages})
+                json=payload)
             response.raise_for_status()
-            text = response.json()['choices'][0]['message']['content']
-            if not isinstance(text, str) or not text.strip():
-                raise ValueError('Empty model response')
-            return text.strip()[:900]
+            message = response.json()['choices'][0]['message']
+        calls = message.get('tool_calls') or []
+        if calls:
+            if len(calls) != 1 or not payload.get('tools'):
+                raise ValueError('Unexpected image tool calls')
+            function = calls[0]['function']
+            if function['name'] != 'generate_image':
+                raise ValueError('Unknown model tool')
+            arguments = json.loads(function['arguments'])
+            prompt = arguments.get('prompt') if isinstance(arguments, dict) else None
+            if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
+                raise ValueError('Invalid image prompt')
+            return self.generate_image(prompt.strip())
+        text = message.get('content')
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError('Empty model response')
+        return text.strip()[:900]
+
+    def generate_image(self, prompt):
+        with httpx.Client(timeout=180) as http:
+            response = http.post(os.environ['BASE_URL'].rstrip('/') + '/chat/completions',
+                headers={'Authorization': 'Bearer ' + os.environ['API_KEY']},
+                json={
+                    'model': os.environ['IMAGE_MODEL'],
+                    'messages': [{'role': 'user', 'content': prompt}],
+                    'modalities': ['image', 'text'],
+                    'image_config': {
+                        'aspect_ratio': os.getenv('IMAGE_ASPECT_RATIO', '1:1'),
+                        'image_size': os.getenv('IMAGE_SIZE', '1K'),
+                    },
+                })
+            response.raise_for_status()
+            message = response.json()['choices'][0]['message']
+        return GeneratedImage(prompt=prompt, jpeg=decode_image(message))
+
+    def send_answer(self, client, tid, answer):
+        if isinstance(answer, GeneratedImage):
+            with tempfile.TemporaryDirectory(prefix='image-', dir=self.data) as directory:
+                path = Path(directory) / 'generated.jpg'
+                path.write_bytes(answer.jpeg)
+                return client.direct_send_photo(path, thread_ids=[int(tid)])
+        return client.direct_send(answer, thread_ids=[int(tid)])
 
     def tick(self):
         client = self.client
@@ -147,20 +196,23 @@ class Bot:
                 except Exception as exc:
                     conversation_log('conversation.model_failed', **details, error=type(exc).__name__)
                     raise
+                is_image = isinstance(answer, GeneratedImage)
+                answer_text = '[已生成圖片] ' + answer.prompt if is_image else answer
+                output = {'text': answer_text, 'media_type': 'image' if is_image else 'text'}
                 # Claim before sending: uncertain network outcomes must not cause duplicate replies.
                 if not self.store.claim(account, tid, mid):
                     continue
                 try:
-                    sent = client.direct_send(answer, thread_ids=[int(tid)])
+                    sent = self.send_answer(client, tid, answer)
                 except Exception as exc:
                     self.store.finish(account, tid, mid, 'uncertain')
-                    conversation_log('conversation.output', **details, text=answer,
+                    conversation_log('conversation.output', **details, **output,
                                      status='uncertain', error=type(exc).__name__)
                     raise
                 self.store.finish(account, tid, mid, 'sent')
-                conversation_log('conversation.output', **details, text=answer,
+                conversation_log('conversation.output', **details, **output,
                                  status='sent', sent_message_id=str(sent.id))
-                self.store.add(account, tid, str(sent.id), sent.timestamp.timestamp(), account, answer)
+                self.store.add(account, tid, str(sent.id), sent.timestamp.timestamp(), account, answer_text)
             self.store.prune(account, tid, self.count * 3)
 
     def run(self):

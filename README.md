@@ -59,9 +59,20 @@ docker compose up -d --build --force-recreate
 | `CONTEXT_CHARS` | `16000` | 文字內容字元上限，不是 token 上限 |
 | `THREAD_LIMIT` | `50` | 每轮讀取最近的對話數，包含私訊；只處理其中群組 |
 | `SYSTEM_PROMPT` | 繁體中文助理 | 模型的 system prompt |
+| `IMAGE_MODEL` | 未設定時關閉 | 圖片模型名稱；沿用 `BASE_URL`／`API_KEY` 的 `/chat/completions` |
+| `IMAGE_ASPECT_RATIO` | `1:1` | 圖片比例，傳至 `image_config.aspect_ratio` |
+| `IMAGE_SIZE` | `1K` | 生成解析度，傳至 `image_config.image_size`；可用值依圖片服務而定 |
 | `IG_PROXY` | 空 | 選用固定出口代理 URL |
 
-現有 `.env.example` 的 `IMAGE_*` 設定保留但此文字 Bot 不使用。修改 `.env` 後執行 `docker compose up -d --force-recreate`。
+修改 `.env` 後執行 `docker compose up -d --force-recreate`。
+
+### 生成圖片
+
+設定 `IMAGE_MODEL` 後，在群組輸入 `@你的bot帳號 畫一隻穿太空衣的貓`，或直接回覆 Bot 的訊息提出畫圖要求。文字模型 `MODEL` 會根據對話決定是否呼叫 `generate_image`，整理完整提示詞，再交給 `IMAGE_MODEL` 生成一張圖片並發送到原群組。一般聊天維持文字回覆。
+
+`MODEL` 必須支援 Chat Completions 的 `tools`／`tool_calls`。圖片請求使用相同的 `/chat/completions`，帶入 `modalities: ["image", "text"]` 和 `image_config`（[介面格式參考](https://openrouter.ai/docs/api/api-reference/chat/create-a-chat-completion)）；服務需支援這些欄位及指定的圖片模型。支援 `choices[0].message.images[].image_url.url`、`content` 中的 `image_url` 區塊，或 Markdown 內的 `data:image/...;base64,...`。目前不下載外部圖片 URL，也不支援上傳圖片的辨識或編輯；若回覆先前生成的圖片要求變化，會依保存的文字提示詞重新生成。
+
+圖片經驗證後轉成 JPEG，最長邊縮至 1080 像素，使用 Instagram 圖片訊息發送；發送結束後清除暫存檔。原始圖片限制為 20 MiB、2500 萬像素。上下文保存圖片提示詞，logs 記錄 `media_type=image`、提示詞及發送狀態，不記錄 base64 內容。生成失敗會沿用模型錯誤退避重試；發送結果不明則不自動重送。圖片生成每次呼叫可能產生服務費用，包括失敗後重新生成。
 
 首次成功登入之前的舊訊息只作為上下文。重啟會重用 session 和去重紀錄，並處理仍落在輪詢視窗內的新提及或回覆 Bot 的文字訊息。高流量群組、停機太久或超過 `THREAD_LIMIT` 的對話可能漏讀；此版本為有限視窗輪詢，不是全歷史同步。回覆最長 900 字元。
 
@@ -88,4 +99,4 @@ python3 -m venv .venv
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-測試使用假的 Instagram／模型服務，涵蓋提及比對、上下文隔離、首次登入基準、重複回覆防護、錯誤重試、API 格式及管理頁驗證。實際 Instagram Session 匯入與訊息收發需要你自己的帳號及 API 設定才能驗證。
+測試使用假的 Instagram／模型服務，涵蓋提及與回覆觸發、上下文隔離、首次登入基準、重複回覆防護、錯誤重試、API 格式、圖片工具呼叫與解碼、圖片發送及暫存清理，以及管理頁驗證。實際 Instagram Session 匯入、模型生圖與訊息收發需要你自己的帳號及 API 設定才能驗證。
