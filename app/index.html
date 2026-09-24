@@ -2,28 +2,26 @@
 <html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><title>Instagram 群組 Bot</title><script src="/ui.js" defer></script></head>
 <body><main>
 <h1>Instagram 群組 Bot</h1>
-<p>登入 Bot 帳號後，將它加入群組，以 @帳號名稱 呼叫。Bot 會將同群組近期文字傳送給設定的模型 API。</p>
-<p>此服務使用非官方 Instagram API；可能觸發安全驗證或帳號限制。請使用專用帳號。</p>
+<p>匯入 Bot 帳號的 sessionid 後，將它加入群組，以 @帳號名稱 呼叫。Bot 會將同群組近期文字傳送給設定的模型 API。</p>
 <h2>狀態</h2><pre id="status" aria-live="polite">載入中…</pre>
-<h2>登入 Instagram</h2>
-<form id="login">
-<p><label>Instagram 帳號 <input name="username" autocomplete="username"></label></p>
-<p><label>密碼 <input name="password" type="password" autocomplete="current-password"></label></p>
-<p><label>雙重驗證碼（選填；App 推播核准不需填寫） <input name="code" autocomplete="one-time-code" inputmode="numeric"></label></p>
-<details><summary>替代方式：匯入已有的 sessionid（推播核准後仍失敗時）</summary>
-<p>目前套件沒有推播核准輪詢。可在另一台電腦的瀏覽器登入 instagram.com，並在手機核准該次登入，直到瀏覽器成功進入帳號。</p>
-<ol><li>在已登入 Instagram 的瀏覽器按 F12 開啟開發者工具。</li><li>Chrome／Edge：Application → Cookies → https://www.instagram.com；Firefox：Storage → Cookies。</li><li>找到 sessionid，複製 Value 並貼到下方，再按「登入並啟動 Bot」。</li></ol>
-<p>此欄有值時優先使用，不需再填帳密。sessionid 等同登入憑證，請勿分享。Instagram 也可能拒絕從不同主機使用 Web session。</p>
-<label>sessionid <input name="sessionid" type="password" autocomplete="off"></label></details>
-<p><button type="submit">登入並啟動 Bot</button></p>
+<h2>如何取得 sessionid</h2>
+<p>在你自己的電腦上操作即可，Bot 主機不需要圖形介面。</p>
+<ol>
+<li>使用 Chrome、Edge 或 Firefox 開啟 <a href="https://www.instagram.com/" target="_blank" rel="noopener noreferrer">Instagram 官方網站</a>，登入要作為 Bot 的帳號。</li>
+<li>在 Instagram 完成所有登入驗證（包含手機推播核准），確認瀏覽器已成功進入該帳號。</li>
+<li>在 Instagram 分頁按 F12 開啟開發者工具；也可從瀏覽器選單開啟「開發者工具」。</li>
+<li>Chrome／Edge：選擇 <strong>Application（應用程式）→ Storage → Cookies → https://www.instagram.com</strong>。Firefox：選擇 <strong>Storage（儲存空間）→ Cookies → https://www.instagram.com</strong>。</li>
+<li>找到名稱為 <strong>sessionid</strong> 的 Cookie，複製它的 <strong>Value（值）</strong>。只複製值，不要包含 <code>sessionid=</code>、引號或其他 Cookie。</li>
+<li>將值貼入下方欄位，按「匯入 Session 並啟動 Bot」。狀態顯示「運行中」及正確帳號即完成。</li>
+</ol>
+<p>找不到 sessionid 時，確認已登入正確的 Instagram 分頁，重新整理後再查看 Cookies。</p>
+<h2>匯入 Session</h2>
+<form id="session">
+<label>sessionid <input name="sessionid" type="password" autocomplete="off" spellcheck="false" required maxlength="2000"></label>
+<p><button type="submit">匯入 Session 並啟動 Bot</button></p>
 </form>
-<form id="continue-login" hidden>
-<h2>繼續驗證登入</h2>
-<p>請先在 Instagram App 核准這次登入，再按下方按鈕。不需重新輸入帳密；原登入狀態保留 10 分鐘，重啟服務會清除。</p>
-<label>驗證碼（僅 Instagram 要求時填寫） <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,8}"></label>
-<p><button type="submit">已在 Instagram 核准，繼續登入</button></p>
-</form>
-<form id="challenge" hidden><h2>Instagram 安全驗證</h2><label>Email／SMS 驗證碼 <input name="code" inputmode="numeric" autocomplete="one-time-code" required pattern="[0-9]{6,8}"></label> <button type="submit">送出驗證碼</button></form>
 <p id="result" role="status"></p>
-<p>Session 僅保存在伺服器，不會顯示 token；密碼不寫入磁碟。群組邀請若在訊息要求中，請先透過 Instagram App 接受。</p>
+<p>sessionid 等同登入憑證，請勿分享。驗證成功後，Session 會保存在伺服器供重啟使用，不會回傳至網頁。管理頁的 admin 密碼用於保護此頁面。</p>
+<p>若 Session 過期或 Instagram 要求驗證，請回到 Instagram 官方網站完成登入與驗證，再複製新的 sessionid 匯入。Instagram 可能拒絕跨主機使用的 Session；本服務使用非官方 API，可能遇到安全驗證或帳號限制。</p>
+<p>群組邀請若在訊息要求中，請先透過 Instagram App 接受。</p>
 </main></body></html>

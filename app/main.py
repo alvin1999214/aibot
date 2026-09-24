@@ -2,31 +2,23 @@ import hmac
 import logging
 import os
 from pathlib import Path
-import queue
 import threading
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from instagrapi import Client
 from instagrapi.exceptions import ChallengeRequired, LoginRequired, TwoFactorRequired
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .core import Store, mentioned
 
 log = logging.getLogger('bot')
-
-
-@dataclass
-class PendingLogin:
-    client: Client
-    payload: object
-    expires: float
 
 
 class Bot:
@@ -37,13 +29,10 @@ class Bot:
         self.store = Store(self.data / 'bot.sqlite3')
         self.lock = threading.Lock()
         self.stop = threading.Event()
-        self.codes = queue.Queue()
         self.client = None
-        self.state = '尚未登入'
+        self.state = '尚未匯入 Session'
         self.error = None
         self.username = None
-        self.challenge = False
-        self.pending = None
         self.poll = max(10, int(os.getenv('POLL_SECONDS', '20')))
         self.count = max(1, min(200, int(os.getenv('CONTEXT_MESSAGES', '40'))))
         self.chars = max(1000, int(os.getenv('CONTEXT_CHARS', '16000')))
@@ -53,16 +42,13 @@ class Bot:
         client = Client()
         if os.getenv('IG_PROXY'):
             client.set_proxy(os.environ['IG_PROXY'])
-        client.challenge_code_handler = self.challenge_code
+        # Propagate verification failures; never enter the library's interactive login flow.
+        client.handle_exception = self.reject_verification
         return client
 
-    def challenge_code(self, username, choice):
-        self.challenge = True
-        self.state = '請輸入 Instagram 寄送的驗證碼（5 分鐘內）'
-        try:
-            return self.codes.get(timeout=300)
-        finally:
-            self.challenge = False
+    @staticmethod
+    def reject_verification(client, exc):
+        raise exc
 
     def save(self, client):
         temp = self.data / 'session.tmp'
@@ -79,64 +65,22 @@ class Bot:
         self.state = '運行中'
         self.error = None
 
-    def expire_pending(self):
-        # Called while holding the client lock; credentials only live in memory.
-        if self.pending and time.monotonic() >= self.pending.expires:
-            self.pending = None
-            self.state = '待核准登入已逾時，請重新輸入帳密'
-
-    def login(self, payload, resume=False):
+    def import_session(self, sessionid):
         # The request handler holds this lock before starting the thread.
         self.client = None
-        self.state = '登入中'
+        self.state = '正在驗證 Session'
         self.username = None
         self.error = None
-        while not self.codes.empty():
-            self.codes.get_nowait()
-        client = None
-        deadline = time.monotonic() + 600
         try:
-            self.expire_pending()
-            pending = self.pending
-            if resume and not pending:
-                self.state = '沒有待核准登入或已逾時，請重新輸入帳密'
-                return
-            if pending and (resume or (not payload.sessionid
-                    and payload.username == pending.payload.username
-                    and payload.password == pending.payload.password)):
-                client = pending.client
-                deadline = pending.expires
-                if resume:
-                    payload = pending.payload.model_copy(update={'code': payload.code})
-            else:
-                client = self.new_client()
-            self.pending = None
-            # Only acknowledge this supported checkpoint after the user explicitly approves.
-            context = client.last_json
-            if (resume and isinstance(context, dict)
-                    and context.get('bloks_action') == 'com.bloks.www.ig.challenge.redirect.async'
-                    and context.get('challenge_context')):
-                client.challenge_bloks_redirect_dismiss()
-            if payload.sessionid:
-                client.login_by_sessionid(payload.sessionid)
-            else:
-                client.login(payload.username, payload.password, verification_code=payload.code)
+            client = self.new_client()
+            if not client.login_by_sessionid(sessionid):
+                raise LoginRequired('Session import rejected')
             self.activate(client)
-        except (TwoFactorRequired, ChallengeRequired) as exc:
-            if client is not None:
-                self.pending = PendingLogin(client, payload, deadline)
+        except (TwoFactorRequired, ChallengeRequired, LoginRequired) as exc:
+            self.state = 'Session 已失效或需要驗證；請在 Instagram 網站完成登入與驗證，再重新取得 sessionid 匯入'
             self.error = type(exc).__name__
-            self.state = ('需要雙重驗證或登入核准：請在 Instagram App 按 Approve，'
-                          '再按「已在 Instagram 核准，繼續登入」（10 分鐘內）。'
-                          '若 Instagram 要求驗證碼，可在繼續登入欄填入。'
-                          '若核准後仍停在此處，套件可能不支援該推播流程，可改用 sessionid 匯入。')
-            if isinstance(exc, TwoFactorRequired):
-                self.state = ('Instagram 要求雙重驗證。目前套件沒有推播核准輪詢，手機 Approve 後不會自動完成登入。'
-                              '可按「已在 Instagram 核准，繼續登入」以原裝置狀態重試；'
-                              '若仍回到此訊息，請從已登入的瀏覽器匯入 sessionid，'
-                              '或使用 Instagram 提供的驗證碼。原登入狀態保留 10 分鐘。')
         except Exception as exc:
-            self.state = '登入失敗；請檢查資料或先在 Instagram App 完成安全驗證'
+            self.state = 'Session 匯入失敗，請確認 sessionid、網路連線及 Instagram 帳號狀態'
             self.error = type(exc).__name__
         finally:
             self.lock.release()
@@ -198,20 +142,20 @@ class Bot:
                     client.load_settings(self.data / 'session.json')
                     self.activate(client)
                 except Exception as exc:
-                    self.state = 'Session 已失效，請重新登入'
+                    self.state = 'Session 無法恢復，請重新取得 sessionid 匯入'
                     self.error = type(exc).__name__
         failures = 0
         while not self.stop.is_set():
             if self.lock.acquire(blocking=False):
                 try:
-                    self.expire_pending()
                     if self.client:
                         self.tick()
                         self.error = None
                         failures = 0
-                except (LoginRequired, ChallengeRequired) as exc:
+                except (LoginRequired, ChallengeRequired, TwoFactorRequired) as exc:
                     self.client = None
-                    self.state = '需要重新登入或在 Instagram App 完成驗證'
+                    self.username = None
+                    self.state = 'Session 需要驗證；請在 Instagram 網站完成驗證後，重新取得 sessionid 匯入'
                     self.error = type(exc).__name__
                 except Exception as exc:
                     failures += 1
@@ -260,6 +204,11 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=[
 ])
 
 
+@app.exception_handler(RequestValidationError)
+async def invalid_request(request, exc):
+    return JSONResponse(status_code=422, content={'detail': '請只提交非空白的 sessionid（最多 2000 字元）'})
+
+
 @app.middleware('http')
 async def headers(request, call_next):
     response = await call_next(request)
@@ -294,50 +243,25 @@ def stylesheet():
 
 @app.get('/status', dependencies=[Depends(auth)])
 def status():
-    return {'state': bot.state, 'username': bot.username, 'error': bot.error,
-            'challenge': bot.challenge, 'approval': bool(bot.pending and time.monotonic() < bot.pending.expires)}
+    return {'state': bot.state, 'username': bot.username, 'error': bot.error}
 
 
-class Login(BaseModel):
-    username: str = Field(default='', max_length=100)
-    password: str = Field(default='', max_length=500)
-    code: str = Field(default='', max_length=20)
-    sessionid: str = Field(default='', max_length=2000)
+class SessionImport(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    sessionid: str = Field(min_length=1, max_length=2000, repr=False)
+
+    @field_validator('sessionid')
+    @classmethod
+    def trim_sessionid(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError('請輸入 sessionid')
+        return value
 
 
-@app.post('/login', dependencies=[Depends(auth)])
-def login(payload: Login):
-    if not payload.sessionid and not (payload.username and payload.password):
-        raise HTTPException(400, '請輸入帳密或 sessionid')
+@app.post('/session', dependencies=[Depends(auth)])
+def import_session(payload: SessionImport):
     if not bot.lock.acquire(blocking=False):
-        raise HTTPException(409, '正在登入或處理訊息，請稍後再試')
-    threading.Thread(target=bot.login, args=(payload,), daemon=True).start()
-    return {'message': '登入已開始，請查看狀態'}
-
-
-class Code(BaseModel):
-    code: str = Field(pattern=r'^\d{6,8}$')
-
-
-class ContinueLogin(BaseModel):
-    code: str = Field(default='', pattern=r'^(?:\d{6,8})?$')
-
-
-@app.post('/continue-login', dependencies=[Depends(auth)])
-def continue_login(payload: ContinueLogin):
-    if not bot.lock.acquire(blocking=False):
-        raise HTTPException(409, '正在登入或處理訊息，請稍後再試')
-    bot.expire_pending()
-    if not bot.pending:
-        bot.lock.release()
-        raise HTTPException(409, '沒有待核准登入或已逾時，請重新輸入帳密')
-    threading.Thread(target=bot.login, args=(payload, True), daemon=True).start()
-    return {'message': '正在沿用原登入狀態繼續驗證，請查看狀態'}
-
-
-@app.post('/challenge', dependencies=[Depends(auth)])
-def challenge(payload: Code):
-    if not bot.challenge:
-        raise HTTPException(409, '目前沒有等待中的驗證')
-    bot.codes.put(payload.code)
-    return {'message': '驗證碼已送出'}
+        raise HTTPException(409, '正在驗證 Session 或處理訊息，請稍後再試')
+    threading.Thread(target=bot.import_session, args=(payload.sessionid,), daemon=True).start()
+    return {'message': 'Session 匯入已開始，請查看狀態'}
