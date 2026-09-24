@@ -177,6 +177,50 @@ class BotTests(unittest.TestCase):
         client.load_settings.assert_called_once_with(Path(self.temp.name) / 'session.json')
         client.login.assert_not_called()
 
+    def test_restart_ignores_pending_history_but_replies_to_new_messages(self):
+        from app.main import Bot
+        (Path(self.temp.name) / 'session.json').write_text('{}')
+        old_mention = self.message('old-mention', 20, '@bot 舊要求', 102)
+        old_reply = self.message('old-reply', 20, '先前追問', 110)
+        old_reply.reply = NS(id='bot-message', user_id='10')
+        boundary = self.message('boundary', 20, '@bot 啟動時的訊息', 150)
+        self.bot.store.claim('10', '100', 'already-sent')
+        self.bot.store.finish('10', '100', 'already-sent', 'sent')
+        with patch.dict(os.environ, {'DATA_DIR': self.temp.name}):
+            restarted = Bot()
+        client = self.bot.client
+        client.account_info.return_value = NS(username='bot')
+        restarted.stop.set()
+        with patch.object(restarted, 'new_client', return_value=client), \
+                patch.object(restarted, 'save'), patch('app.main.time.time', return_value=150):
+            restarted.run()
+        restarted.reply = Mock(return_value='answer')
+        thread = NS(id='100', is_group=True, messages=[old_mention, old_reply, boundary])
+        client.direct_threads.return_value = [thread]
+        restarted.tick()
+        restarted.tick()
+        restarted.reply.assert_not_called()
+        client.direct_send.assert_not_called()
+        client.direct_send_photo.assert_not_called()
+        self.assertTrue(restarted.store.done('10', '100', 'already-sent'))
+        thread.messages.append(self.message('new', 20, '@bot 新要求', 151))
+        restarted.tick()
+        restarted.tick()
+        restarted.reply.assert_called_once()
+        client.direct_send.assert_called_once_with('answer', thread_ids=[100])
+        context = restarted.reply.call_args.args[0]
+        self.assertTrue(any('舊要求' in item['content'] for item in context))
+
+    def test_session_reimport_refreshes_cutoff(self):
+        client = Mock(user_id=10)
+        client.account_info.return_value = NS(username='bot')
+        self.bot.lock.acquire()
+        with patch.object(self.bot, 'new_client', return_value=client), \
+                patch.object(self.bot, 'save'), patch('app.main.time.time', return_value=300):
+            self.bot.import_session('session-token')
+        self.assertEqual(self.bot.store.since('10', 400), 300)
+        self.assertFalse(self.bot.lock.locked())
+
 
 
 class WebTests(unittest.TestCase):

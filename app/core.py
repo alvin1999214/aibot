@@ -35,6 +35,13 @@ class Store:
             db.execute('INSERT OR IGNORE INTO accounts VALUES (?,?)', (account, now))
             return db.execute('SELECT since FROM accounts WHERE id=?', (account,)).fetchone()[0]
 
+    def start_session(self, account, now):
+        # Reset only on activation, not on each poll: old pending requests stay silent
+        # after restart while new requests can still retry within this session.
+        with self.connect() as db:
+            db.execute('INSERT INTO accounts VALUES (?,?) '
+                       'ON CONFLICT(id) DO UPDATE SET since=excluded.since', (account, now))
+
     def add(self, account, thread, mid, ts, sender, body):
         with self.connect() as db:
             db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?)',

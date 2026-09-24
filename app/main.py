@@ -73,7 +73,7 @@ class Bot:
     def activate(self, client):
         user = client.account_info()
         self.save(client)
-        self.store.since(str(client.user_id), time.time())
+        self.store.start_session(str(client.user_id), time.time())
         self.username = user.username
         self.client = client
         self.state = '運行中'
