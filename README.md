@@ -1,6 +1,6 @@
 # Instagram 群組聊天 Bot
 
-透過 Docker Compose 啟動，在 localhost 登入專用 Instagram 帳號。把該帳號加入群組後，群友傳送 `@你的bot帳號 問題`，Bot 會把同群組近期文字上下文交給 `.env` 指定的模型並回覆。
+透過 Docker Compose 啟動，透過主機 IP 登入專用 Instagram 帳號。把該帳號加入群組後，群友傳送 `@你的bot帳號 問題`，Bot 會把同群組近期文字上下文交給 `.env` 指定的模型並回覆。
 
 Instagram 官方 Messaging API [不支援群組聊天](https://www.postman.com/meta/instagram/folder/uxudqu0/send-api)。本專案使用 [instagrapi](https://github.com/subzeroid/instagrapi) 非官方 API，不能保證 Instagram 接受每次登入或長期可用；可能遇到安全驗證、限流或帳號限制。這裡使用的是帳號 session，並非官方 OAuth access token。
 
@@ -23,7 +23,7 @@ docker compose up -d --build
 | `MODEL` | 服務提供的模型名稱 |
 | `ADMIN_PASSWORD` | 自訂至少 16 字元的管理密碼，必須更換範例值 |
 
-開啟 http://localhost:8000，以 `admin` 和 `ADMIN_PASSWORD` 通過瀏覽器管理頁登入，再填入 **Bot 的 Instagram 帳密**。Session 會自動取得並保存在 Docker volume，Bot 隨即啟動。密碼不寫入磁碟；token 不回傳前端。
+開啟 `http://主機IP:8001`（主機本機也可用 http://localhost:8001），以 `admin` 和 `ADMIN_PASSWORD` 通過瀏覽器管理頁登入，再填入 **Bot 的 Instagram 帳密**。Session 會自動取得並保存在 Docker volume，Bot 隨即啟動。密碼不寫入磁碟；token 不回傳前端。
 
 - 若出現雙重驗證要求，重新填入帳密及當下 2FA 驗證碼後送出。
 - 若 Instagram 發送 Email／SMS challenge，頁面會出現驗證碼表單，請於 5 分鐘內提交。
@@ -37,7 +37,8 @@ docker compose up -d --build
 
 | 變數 | 預設值 | 用途 |
 | --- | --- | --- |
-| `PORT` | `8000` | localhost 管理頁埠 |
+| `PORT` | `8001` | 主機對外管理頁埠 |
+| `ALLOWED_HOSTS` | `*` | 允許的主機 IP／域名，逗號分隔、不含埠；限制時請加入 `127.0.0.1` 供健康檢查使用 |
 | `POLL_SECONDS` | `20` | 輪詢間隔，最低 10 秒；錯誤時退避至最多 300 秒 |
 | `CONTEXT_MESSAGES` | `40` | 每個群組讀取及模型使用的近期訊息數，最高 200 |
 | `CONTEXT_CHARS` | `16000` | 文字內容字元上限，不是 token 上限 |
@@ -53,7 +54,7 @@ docker compose up -d --build
 
 ## 資料與維護
 
-`bot-data` volume 保存 `/data/session.json`、SQLite 上下文和處理紀錄。Session 等同登入憑證，請保護備份。每群文字保留最多 `CONTEXT_MESSAGES × 3` 筆（成功處理後清理），去重 ID 長期保留。管理頁只綁定 `127.0.0.1`，有管理密碼與跨站請求防護，請勿直接公開到網際網路。
+`bot-data` volume 保存 `/data/session.json`、SQLite 上下文和處理紀錄。Session 等同登入憑證，請保護備份。每群文字保留最多 `CONTEXT_MESSAGES × 3` 筆（成功處理後清理），去重 ID 長期保留。管理頁綁定 `0.0.0.0`，可從其他電腦透過主機 IP 存取，並保留管理密碼與跨站請求防護。主機防火牆需允許管理電腦連入 TCP `8001`（或自訂 `PORT`）。HTTP 不加密登入資料，請在可信任內網使用；若跨網際網路，請搭配 HTTPS。
 
 ```bash
 docker compose logs -f --tail=100

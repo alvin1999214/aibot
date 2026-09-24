@@ -206,7 +206,9 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=['localhost', '127.0.0.1', '[::1]', 'testserver'])
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=[
+    host.strip() for host in os.getenv('ALLOWED_HOSTS', '*').split(',') if host.strip()
+])
 
 
 @app.middleware('http')

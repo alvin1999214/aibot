@@ -148,7 +148,10 @@ class WebTests(unittest.TestCase):
                 self.assertEqual(client.post('/login', json={}, headers={
                     'X-Bot-Admin': '1', 'Origin': 'https://evil.example'}).status_code, 403)
                 self.assertEqual(client.post('/login', json={}, headers={'X-Bot-Admin': '1'}).status_code, 400)
-                self.assertEqual(client.get('/', headers={'Host': 'evil.example'}).status_code, 400)
+                self.assertEqual(client.get('/', headers={'Host': '192.168.1.10:8001'}).status_code, 200)
+                self.assertEqual(client.post('/login', json={}, headers={
+                    'Host': '192.168.1.10:8001', 'Origin': 'http://192.168.1.10:8001',
+                    'X-Bot-Admin': '1'}).status_code, 400)
 
 
 if __name__ == '__main__':
