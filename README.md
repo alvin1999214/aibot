@@ -1,6 +1,6 @@
 # Instagram 群組聊天 Bot
 
-透過 Docker Compose 啟動，透過主機 IP 開啟管理頁並匯入專用 Instagram 帳號的 sessionid。把該帳號加入群組後，群友傳送 `@你的bot帳號 問題`，Bot 會把同群組近期文字上下文交給 `.env` 指定的模型並回覆。
+透過 Docker Compose 啟動，透過主機 IP 開啟管理頁並匯入專用 Instagram 帳號的 sessionid。把該帳號加入群組後，群友傳送 `@你的bot帳號 問題` 或直接回覆 Bot 發送的訊息，Bot 會把同群組近期文字上下文交給 `.env` 指定的模型並回覆。
 
 Instagram 官方 Messaging API [不支援群組聊天](https://www.postman.com/meta/instagram/folder/uxudqu0/send-api)。本專案使用 [instagrapi](https://github.com/subzeroid/instagrapi) 非官方 API，不能保證 Instagram 接受每次登入或長期可用；可能遇到安全驗證、限流或帳號限制。這裡使用的是帳號 session，並非官方 OAuth access token。
 
@@ -48,7 +48,7 @@ docker compose up -d --build --force-recreate
 
 ## 行為與設定
 
-只回覆群組中的文字 `@username`，大小寫不敏感，不回覆自己的訊息或私訊。媒體內容與語音目前不送入模型。每個群組及帳號的上下文獨立保存，包括未提及 Bot 的近期文字。請讓群組成員知悉這些文字會傳至你設定的 API 服務。
+群組中的文字訊息只要包含 `@username`（大小寫不敏感），或使用 Instagram 的回覆功能回覆 Bot 發送的訊息，就會觸發回覆。不回覆自己的訊息或私訊。媒體內容與語音目前不送入模型。每個群組及帳號的上下文獨立保存，包括未提及 Bot 的近期文字。請讓群組成員知悉這些文字會傳至你設定的 API 服務。
 
 | 變數 | 預設值 | 用途 |
 | --- | --- | --- |
@@ -63,7 +63,7 @@ docker compose up -d --build --force-recreate
 
 現有 `.env.example` 的 `IMAGE_*` 設定保留但此文字 Bot 不使用。修改 `.env` 後執行 `docker compose up -d --force-recreate`。
 
-首次成功登入之前的舊訊息只作為上下文。重啟會重用 session 和去重紀錄，並處理仍落在輪詢視窗內的新提及。高流量群組、停機太久或超過 `THREAD_LIMIT` 的對話可能漏讀；此版本為有限視窗輪詢，不是全歷史同步。回覆最長 900 字元。
+首次成功登入之前的舊訊息只作為上下文。重啟會重用 session 和去重紀錄，並處理仍落在輪詢視窗內的新提及或回覆 Bot 的文字訊息。高流量群組、停機太久或超過 `THREAD_LIMIT` 的對話可能漏讀；此版本為有限視窗輪詢，不是全歷史同步。回覆最長 900 字元。
 
 送出回覆前會先記錄 claim，避免重啟或網路逾時導致重複發送。若送出結果不明，該則不自動重送，使用者可再次 @ Bot。模型請求失敗則會退避重試。健康檢查只代表管理服務在線；Instagram／模型錯誤請看管理頁狀態。
 

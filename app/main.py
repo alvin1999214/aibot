@@ -128,14 +128,20 @@ class Bot:
             for message in messages:
                 mid = str(message.id)
                 ts = message.timestamp.timestamp()
+                body = message.text or ''
+                replied_to = getattr(message, 'reply', None)
+                replies_to_bot = (replied_to is not None
+                                  and str(replied_to.user_id) == account)
                 if (ts <= since or str(message.user_id) == account
-                        or not mentioned(message.text or '', self.username)
+                        or not body.strip()
+                        or not (mentioned(body, self.username) or replies_to_bot)
                         or self.store.done(account, tid, mid)):
                     continue
                 context = self.store.context(account, tid, ts, self.count, self.chars)
                 details = {'account': account, 'thread_id': tid, 'message_id': mid}
                 conversation_log('conversation.input', **details,
-                                 sender_id=str(message.user_id), text=message.text, context=context)
+                                 sender_id=str(message.user_id), text=message.text, context=context,
+                                 reply_to_message_id=str(replied_to.id) if replied_to else None)
                 try:
                     answer = self.reply(context)
                 except Exception as exc:

@@ -78,6 +78,37 @@ class BotTests(unittest.TestCase):
         self.bot.tick()
         self.assertEqual(self.bot.client.direct_send.call_count, 1)
 
+    def test_reply_to_bot_triggers_once_without_mention(self):
+        from instagrapi.types import ReplyMessage
+        message = self.message('1', 20, '請再解釋一下', 102)
+        message.reply = ReplyMessage(id='previous', user_id='10',
+                                    timestamp=datetime.fromtimestamp(90, timezone.utc), text='先前回覆')
+        self.bot.client.direct_threads.return_value = [NS(id='100', is_group=True, messages=[message])]
+        self.bot.tick()
+        self.bot.tick()
+        self.bot.reply.assert_called_once()
+        self.assertIn('請再解釋一下', self.bot.reply.call_args.args[0][-1]['content'])
+        self.bot.client.direct_send.assert_called_once_with('answer', thread_ids=[100])
+
+    def test_reply_trigger_ignores_other_users_self_history_private_and_nontext(self):
+        for target, sender, ts, is_group, body in [
+            ('20', 30, 102, True, '回覆別人'),
+            (None, 20, 102, True, '未知發送者'),
+            ('10', 10, 102, True, '自己回覆'),
+            ('10', 20, 90, True, '舊訊息'),
+            ('10', 20, 102, False, '私訊'),
+            ('10', 20, 102, True, None),
+            ('10', 20, 102, True, '   '),
+        ]:
+            with self.subTest(target=target, sender=sender, ts=ts, is_group=is_group, body=body):
+                message = self.message('1', sender, body, ts)
+                message.reply = NS(id='previous', user_id=target)
+                self.bot.client.direct_threads.return_value = [
+                    NS(id='100', is_group=is_group, messages=[message])]
+                self.bot.tick()
+        self.bot.reply.assert_not_called()
+        self.bot.client.direct_send.assert_not_called()
+
     def test_model_failure_can_retry(self):
         self.bot.client.direct_threads.return_value = [NS(id='100', is_group=True,
             messages=[self.message('1', 20, '@bot hello', 102)])]
