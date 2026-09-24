@@ -59,12 +59,22 @@ docker compose up -d --build --force-recreate
 | `CONTEXT_CHARS` | `16000` | 文字內容字元上限，不是 token 上限 |
 | `THREAD_LIMIT` | `50` | 每轮讀取最近的對話數，包含私訊；只處理其中群組 |
 | `SYSTEM_PROMPT` | 繁體中文助理 | 模型的 system prompt |
+| `WEB_SEARCH` | `false` | 設為 `true` 後，Gemini 在需要即時或網路資料時可使用 Google Search grounding |
 | `IMAGE_MODEL` | 未設定時關閉 | 圖片模型名稱；沿用 `BASE_URL`／`API_KEY` 的 `/chat/completions` |
 | `IMAGE_ASPECT_RATIO` | `1:1` | 圖片比例，傳至 `image_config.aspect_ratio` |
 | `IMAGE_SIZE` | `1K` | 生成解析度，傳至 `image_config.image_size`；可用值依圖片服務而定 |
 | `IG_PROXY` | 空 | 選用固定出口代理 URL |
 
 修改 `.env` 後執行 `docker compose up -d --force-recreate`。
+
+### 網路搜尋
+
+當使用 CLIProxyAPI 的 OpenAI 相容 `/v1/chat/completions` 端點時，把 `.env` 的
+`WEB_SEARCH` 設為 `true`。Bot 會在請求中加入 CLIProxyAPI 支援的
+`{"google_search": {}}` 工具；CLIProxyAPI 會把它轉成 Gemini 原生的
+`googleSearch` grounding。模型會自行判斷問題是否需要搜尋；提問時可明確說「請上網查詢最新資料」。
+
+請使用支援 Google Search grounding 的 Gemini 模型，並更新到較新的 CLIProxyAPI 版本。搜尋是 Gemini 伺服器端工具，不會以一般 `tool_calls` 回到 Bot，完成搜尋後會直接回傳整理好的文字答案。若需要穩定取得 `groundingMetadata` 的來源 URL，請改走 Gemini 原生 `generateContent` 介面；不同 CLIProxyAPI 版本對 OpenAI 相容回應中的引用欄位支援不同。
 
 ### 生成圖片
 

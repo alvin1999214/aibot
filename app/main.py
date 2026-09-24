@@ -101,15 +101,25 @@ class Bot:
 
     def reply(self, messages):
         system = os.getenv('SYSTEM_PROMPT', '請用繁體中文簡潔回答群組問題。')
+        web_search = os.getenv('WEB_SEARCH', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        if web_search:
+            system += (
+                '\n需要即時、最新或網路上的資料時，使用 Google Search；若使用搜尋，'
+                '若回應中有可用來源資訊，請在回答中簡短列出。'
+            )
         payload = {'model': os.environ['MODEL'], 'messages': [
             {'role': 'system', 'content': system}
         ] + messages}
+        if web_search:
+            # CLIProxyAPI maps this OpenAI-compatible extension to Gemini's
+            # native {"googleSearch": {}} grounding tool.
+            payload['tools'] = [{'google_search': {}}]
         if os.getenv('IMAGE_MODEL', '').strip():
             payload['messages'][0]['content'] += (
                 '\n當最新使用者要求生成或畫圖片時，呼叫 generate_image，'
                 '把上下文整理為完整的圖片描述。工具會直接把圖片發送至群組；'
                 '一般聊天不需呼叫工具。每次最多生成一張圖片。')
-            payload['tools'] = [IMAGE_TOOL]
+            payload.setdefault('tools', []).append(IMAGE_TOOL)
             payload['tool_choice'] = 'auto'
         with httpx.Client(timeout=90) as http:
             response = http.post(os.environ['BASE_URL'].rstrip('/') + '/chat/completions',

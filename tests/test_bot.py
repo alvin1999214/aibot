@@ -129,6 +129,17 @@ class BotTests(unittest.TestCase):
                 self.assertEqual(call.args[0], 'https://model.example/v1/chat/completions')
                 self.assertEqual(call.kwargs['json']['model'], 'test-model')
 
+    def test_model_request_enables_google_search(self):
+        from app.main import Bot
+        with patch.dict(os.environ, {'BASE_URL': 'https://model.example/v1', 'API_KEY': 'secret',
+                                     'MODEL': 'test-model', 'WEB_SEARCH': 'true'}):
+            with patch('app.main.httpx.Client') as client:
+                response = client.return_value.__enter__.return_value.post.return_value
+                response.json.return_value = {'choices': [{'message': {'content': '已查詢'}}]}
+                self.assertEqual(Bot.reply(self.bot, [{'role': 'user', 'content': '查一下最新消息'}]), '已查詢')
+                payload = client.return_value.__enter__.return_value.post.call_args.kwargs['json']
+                self.assertIn({'google_search': {}}, payload['tools'])
+
     def test_import_saves_session_and_releases_lock(self):
         client = Mock(user_id=10)
         client.account_info.return_value = NS(username='bot')
