@@ -21,6 +21,23 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .core import Store, mentioned
 from .images import GeneratedImage, IMAGE_TOOL, decode_image
 
+WEB_SEARCH_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'search_web',
+        'description': ('Search the web before answering. Use for current, recent, changing, '
+                        'or externally verifiable information, and when the user asks to search.'),
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string', 'description': 'A concise web search query.'},
+            },
+            'required': ['query'],
+            'additionalProperties': False,
+        },
+    },
+}
+
 log = logging.getLogger('bot')
 log.setLevel(logging.INFO)
 if not log.handlers:
@@ -113,24 +130,34 @@ class Bot:
     def reply(self, messages):
         system = os.getenv('SYSTEM_PROMPT', '請用繁體中文簡潔回答群組問題。')
         web_search = os.getenv('WEB_SEARCH', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        image_model = os.getenv('IMAGE_MODEL', '').strip()
         if web_search:
-            system += (
-                '\n需要即時、最新或網路上的資料時，使用 Google Search；若使用搜尋，'
-                '若回應中有可用來源資訊，請在回答中簡短列出。'
-            )
+            if image_model:
+                system += (
+                    '\n需要即時、最新或網路上的資料時，呼叫 search_web；'
+                    '若回應中有可用來源資訊，請在回答中簡短列出。'
+                )
+            else:
+                system += (
+                    '\n需要即時、最新或網路上的資料時，使用 Google Search；'
+                    '若回應中有可用來源資訊，請在回答中簡短列出。'
+                )
         payload = {'model': os.environ['MODEL'], 'messages': [
             {'role': 'system', 'content': system}
         ] + messages}
-        if web_search:
+        if web_search and not image_model:
             # CLIProxyAPI maps this OpenAI-compatible extension to Gemini's
             # native {"googleSearch": {}} grounding tool.
             payload['tools'] = [{'google_search': {}}]
-        if os.getenv('IMAGE_MODEL', '').strip():
+        if image_model:
             payload['messages'][0]['content'] += (
                 '\n當最新使用者要求生成或畫圖片時，呼叫 generate_image，'
                 '把上下文整理為完整的圖片描述。工具會直接把圖片發送至群組；'
                 '一般聊天不需呼叫工具。每次最多生成一張圖片。')
-            payload.setdefault('tools', []).append(IMAGE_TOOL)
+            # Gemini/Antigravity can reject a built-in search tool mixed with
+            # function declarations. Route search as a function first, then make
+            # a separate request containing only the server-side search tool.
+            payload['tools'] = ([WEB_SEARCH_TOOL] if web_search else []) + [IMAGE_TOOL]
             payload['tool_choice'] = 'auto'
         with httpx.Client(timeout=90) as http:
             response = http.post(os.environ['BASE_URL'].rstrip('/') + '/chat/completions',
@@ -141,18 +168,47 @@ class Bot:
         calls = message.get('tool_calls') or []
         if calls:
             if len(calls) != 1 or not payload.get('tools'):
-                raise ValueError('Unexpected image tool calls')
+                raise ValueError('Unexpected tool calls')
             function = calls[0]['function']
-            if function['name'] != 'generate_image':
-                raise ValueError('Unknown model tool')
             arguments = json.loads(function['arguments'])
-            prompt = arguments.get('prompt') if isinstance(arguments, dict) else None
-            if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
-                raise ValueError('Invalid image prompt')
-            return self.generate_image(prompt.strip())
+            if not isinstance(arguments, dict):
+                raise ValueError('Invalid tool arguments')
+            if function['name'] == 'generate_image':
+                prompt = arguments.get('prompt')
+                if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
+                    raise ValueError('Invalid image prompt')
+                return self.generate_image(prompt.strip())
+            if function['name'] == 'search_web' and web_search:
+                query = arguments.get('query')
+                if not isinstance(query, str) or not query.strip() or len(query) > 4000:
+                    raise ValueError('Invalid web search query')
+                return self.search_web(messages, query.strip())
+            raise ValueError('Unknown model tool')
         text = message.get('content')
         if not isinstance(text, str) or not text.strip():
             raise ValueError('Empty model response')
+        return text.strip()[:900]
+
+    def search_web(self, messages, query):
+        system = os.getenv('SYSTEM_PROMPT', '請用繁體中文簡潔回答群組問題。')
+        system += (
+            '\n本次必須使用 Google Search 查詢後再回答。'
+            '請根據搜尋結果簡潔回答；若回應中有可用來源資訊，請列出來源。'
+            f'\n搜尋主題：{query}'
+        )
+        with httpx.Client(timeout=90) as http:
+            response = http.post(os.environ['BASE_URL'].rstrip('/') + '/chat/completions',
+                headers={'Authorization': 'Bearer ' + os.environ['API_KEY']},
+                json={
+                    'model': os.environ['MODEL'],
+                    'messages': [{'role': 'system', 'content': system}] + messages,
+                    'tools': [{'google_search': {}}],
+                })
+            raise_for_model_status(response)
+            message = response.json()['choices'][0]['message']
+        text = message.get('content')
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError('Empty web search response')
         return text.strip()[:900]
 
     def generate_image(self, prompt):

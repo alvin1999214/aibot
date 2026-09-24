@@ -134,7 +134,7 @@ class BotTests(unittest.TestCase):
     def test_model_request_enables_google_search(self):
         from app.main import Bot
         with patch.dict(os.environ, {'BASE_URL': 'https://model.example/v1', 'API_KEY': 'secret',
-                                     'MODEL': 'test-model', 'WEB_SEARCH': 'true'}):
+                                     'MODEL': 'test-model', 'WEB_SEARCH': 'true', 'IMAGE_MODEL': ''}):
             with patch('app.main.httpx.Client') as client:
                 response = client.return_value.__enter__.return_value.post.return_value
                 response.json.return_value = {'choices': [{'message': {'content': '已查詢'}}]}
@@ -142,12 +142,35 @@ class BotTests(unittest.TestCase):
                 payload = client.return_value.__enter__.return_value.post.call_args.kwargs['json']
                 self.assertIn({'google_search': {}}, payload['tools'])
 
+    def test_search_and_image_tools_are_split_across_requests(self):
+        from app.main import Bot
+        route_response = Mock()
+        route_response.json.return_value = {'choices': [{'message': {'tool_calls': [{
+            'function': {'name': 'search_web', 'arguments': '{"query":"最新 AI 消息"}'},
+        }]}}]}
+        search_response = Mock()
+        search_response.json.return_value = {'choices': [{'message': {'content': '搜尋結果'}}]}
+        with patch.dict(os.environ, {'BASE_URL': 'https://model.example/v1', 'API_KEY': 'secret',
+                                     'MODEL': 'test-model', 'WEB_SEARCH': 'true',
+                                     'IMAGE_MODEL': 'image-model'}):
+            with patch('app.main.httpx.Client') as client:
+                client.return_value.__enter__.return_value.post.side_effect = [
+                    route_response, search_response]
+                result = Bot.reply(self.bot, [{'role': 'user', 'content': '查一下最新 AI 消息'}])
+        self.assertEqual(result, '搜尋結果')
+        calls = client.return_value.__enter__.return_value.post.call_args_list
+        first_tools = calls[0].kwargs['json']['tools']
+        self.assertEqual({tool['function']['name'] for tool in first_tools},
+                         {'search_web', 'generate_image'})
+        self.assertFalse(any('google_search' in tool for tool in first_tools))
+        self.assertEqual(calls[1].kwargs['json']['tools'], [{'google_search': {}}])
+
     def test_model_http_error_logs_status_and_body(self):
         from app.main import Bot
         request = httpx.Request('POST', 'https://model.example/v1/chat/completions')
         failed = httpx.Response(400, text='invalid google_search tool', request=request)
         with patch.dict(os.environ, {'BASE_URL': 'https://model.example/v1', 'API_KEY': 'secret',
-                                     'MODEL': 'test-model', 'WEB_SEARCH': 'true'}):
+                                     'MODEL': 'test-model', 'WEB_SEARCH': 'true', 'IMAGE_MODEL': ''}):
             with patch('app.main.httpx.Client') as client, self.assertLogs('bot', 'WARNING') as logs:
                 client.return_value.__enter__.return_value.post.return_value = failed
                 with self.assertRaises(httpx.HTTPStatusError):
