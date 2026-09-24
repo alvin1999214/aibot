@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><title>Instagram 群組 Bot</title><script src="/ui.js" defer></script></head>
+<body><main>
+<h1>Instagram 群組 Bot</h1>
+<p>登入 Bot 帳號後，將它加入群組，以 @帳號名稱 呼叫。Bot 會將同群組近期文字傳送給設定的模型 API。</p>
+<p>此服務使用非官方 Instagram API；可能觸發安全驗證或帳號限制。請使用專用帳號。</p>
+<h2>狀態</h2><pre id="status" aria-live="polite">載入中…</pre>
+<h2>登入 Instagram</h2>
+<form id="login">
+<p><label>Instagram 帳號 <input name="username" autocomplete="username"></label></p>
+<p><label>密碼 <input name="password" type="password" autocomplete="current-password"></label></p>
+<p><label>雙重驗證碼（需要 2FA 時填入後重新登入） <input name="code" autocomplete="one-time-code" inputmode="numeric"></label></p>
+<details><summary>替代方式：匯入已有的 sessionid</summary><p>若帳密登入受阻，可從自己已登入 Instagram 的瀏覽器 Cookie 取得 sessionid。此欄有值時會優先使用它。</p><label>sessionid <input name="sessionid" type="password" autocomplete="off"></label></details>
+<p><button type="submit">登入並啟動 Bot</button></p>
+</form>
+<form id="challenge" hidden><h2>Instagram 安全驗證</h2><label>Email／SMS 驗證碼 <input name="code" inputmode="numeric" autocomplete="one-time-code" required pattern="[0-9]{6,8}"></label> <button type="submit">送出驗證碼</button></form>
+<p id="result" role="status"></p>
+<p>Session 僅保存在伺服器，不會顯示 token；密碼不寫入磁碟。群組邀請若在訊息要求中，請先透過 Instagram App 接受。</p>
+</main></body></html>

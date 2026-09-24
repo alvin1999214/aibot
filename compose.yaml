@@ -1,0 +1,21 @@
+services:
+  instagram-bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:${PORT:-8000}:8000"
+    volumes:
+      - bot-data:/data
+    environment:
+      DATA_DIR: /data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+volumes:
+  bot-data:
