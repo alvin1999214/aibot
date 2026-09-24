@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -19,6 +20,13 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .core import Store, mentioned
 
 log = logging.getLogger('bot')
+
+
+@dataclass
+class PendingLogin:
+    client: Client
+    payload: object
+    expires: float
 
 
 class Bot:
@@ -35,6 +43,7 @@ class Bot:
         self.error = None
         self.username = None
         self.challenge = False
+        self.pending = None
         self.poll = max(10, int(os.getenv('POLL_SECONDS', '20')))
         self.count = max(1, min(200, int(os.getenv('CONTEXT_MESSAGES', '40'))))
         self.chars = max(1000, int(os.getenv('CONTEXT_CHARS', '16000')))
@@ -70,7 +79,13 @@ class Bot:
         self.state = '運行中'
         self.error = None
 
-    def login(self, payload):
+    def expire_pending(self):
+        # Called while holding the client lock; credentials only live in memory.
+        if self.pending and time.monotonic() >= self.pending.expires:
+            self.pending = None
+            self.state = '待核准登入已逾時，請重新輸入帳密'
+
+    def login(self, payload, resume=False):
         # The request handler holds this lock before starting the thread.
         self.client = None
         self.state = '登入中'
@@ -78,15 +93,48 @@ class Bot:
         self.error = None
         while not self.codes.empty():
             self.codes.get_nowait()
+        client = None
+        deadline = time.monotonic() + 600
         try:
-            client = self.new_client()
+            self.expire_pending()
+            pending = self.pending
+            if resume and not pending:
+                self.state = '沒有待核准登入或已逾時，請重新輸入帳密'
+                return
+            if pending and (resume or (not payload.sessionid
+                    and payload.username == pending.payload.username
+                    and payload.password == pending.payload.password)):
+                client = pending.client
+                deadline = pending.expires
+                if resume:
+                    payload = pending.payload.model_copy(update={'code': payload.code})
+            else:
+                client = self.new_client()
+            self.pending = None
+            # Only acknowledge this supported checkpoint after the user explicitly approves.
+            context = client.last_json
+            if (resume and isinstance(context, dict)
+                    and context.get('bloks_action') == 'com.bloks.www.ig.challenge.redirect.async'
+                    and context.get('challenge_context')):
+                client.challenge_bloks_redirect_dismiss()
             if payload.sessionid:
                 client.login_by_sessionid(payload.sessionid)
             else:
                 client.login(payload.username, payload.password, verification_code=payload.code)
             self.activate(client)
-        except TwoFactorRequired:
-            self.state = '需要雙重驗證：填入帳密及 2FA 驗證碼後再次登入'
+        except (TwoFactorRequired, ChallengeRequired) as exc:
+            if client is not None:
+                self.pending = PendingLogin(client, payload, deadline)
+            self.error = type(exc).__name__
+            self.state = ('需要雙重驗證或登入核准：請在 Instagram App 按 Approve，'
+                          '再按「已在 Instagram 核准，繼續登入」（10 分鐘內）。'
+                          '若 Instagram 要求驗證碼，可在繼續登入欄填入。'
+                          '若核准後仍停在此處，套件可能不支援該推播流程，可改用 sessionid 匯入。')
+            if isinstance(exc, TwoFactorRequired):
+                self.state = ('Instagram 要求雙重驗證。目前套件沒有推播核准輪詢，手機 Approve 後不會自動完成登入。'
+                              '可按「已在 Instagram 核准，繼續登入」以原裝置狀態重試；'
+                              '若仍回到此訊息，請從已登入的瀏覽器匯入 sessionid，'
+                              '或使用 Instagram 提供的驗證碼。原登入狀態保留 10 分鐘。')
         except Exception as exc:
             self.state = '登入失敗；請檢查資料或先在 Instagram App 完成安全驗證'
             self.error = type(exc).__name__
@@ -156,6 +204,7 @@ class Bot:
         while not self.stop.is_set():
             if self.lock.acquire(blocking=False):
                 try:
+                    self.expire_pending()
                     if self.client:
                         self.tick()
                         self.error = None
@@ -245,7 +294,8 @@ def stylesheet():
 
 @app.get('/status', dependencies=[Depends(auth)])
 def status():
-    return {'state': bot.state, 'username': bot.username, 'error': bot.error, 'challenge': bot.challenge}
+    return {'state': bot.state, 'username': bot.username, 'error': bot.error,
+            'challenge': bot.challenge, 'approval': bool(bot.pending and time.monotonic() < bot.pending.expires)}
 
 
 class Login(BaseModel):
@@ -267,6 +317,22 @@ def login(payload: Login):
 
 class Code(BaseModel):
     code: str = Field(pattern=r'^\d{6,8}$')
+
+
+class ContinueLogin(BaseModel):
+    code: str = Field(default='', pattern=r'^(?:\d{6,8})?$')
+
+
+@app.post('/continue-login', dependencies=[Depends(auth)])
+def continue_login(payload: ContinueLogin):
+    if not bot.lock.acquire(blocking=False):
+        raise HTTPException(409, '正在登入或處理訊息，請稍後再試')
+    bot.expire_pending()
+    if not bot.pending:
+        bot.lock.release()
+        raise HTTPException(409, '沒有待核准登入或已逾時，請重新輸入帳密')
+    threading.Thread(target=bot.login, args=(payload, True), daemon=True).start()
+    return {'message': '正在沿用原登入狀態繼續驗證，請查看狀態'}
 
 
 @app.post('/challenge', dependencies=[Depends(auth)])

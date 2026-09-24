@@ -130,6 +130,68 @@ class BotTests(unittest.TestCase):
             client.login_by_sessionid.assert_called_once_with('session-token')
             activate.assert_called_once_with(client)
 
+    def test_approval_resume_reuses_client_and_acknowledges_checkpoint(self):
+        from app.main import Login, ContinueLogin
+        from instagrapi.exceptions import ChallengeRequired
+        client = Mock()
+        client.last_json = {'bloks_action': 'com.bloks.www.ig.challenge.redirect.async',
+                            'challenge_context': 'private-context'}
+        client.login.side_effect = [ChallengeRequired(), True]
+        self.bot.lock.acquire()
+        with patch.object(self.bot, 'new_client', return_value=client) as factory:
+            self.bot.login(Login(username='bot', password='password'))
+            self.assertIs(self.bot.pending.client, client)
+            self.assertFalse((Path(self.temp.name) / 'session.json').exists())
+            self.bot.lock.acquire()
+            with patch.object(self.bot, 'activate') as activate:
+                self.bot.login(ContinueLogin(), resume=True)
+                activate.assert_called_once_with(client)
+            factory.assert_called_once()
+        client.challenge_bloks_redirect_dismiss.assert_called_once()
+        self.assertEqual(client.login.call_count, 2)
+        self.assertIsNone(self.bot.pending)
+        self.assertFalse(self.bot.lock.locked())
+
+    def test_two_factor_resume_uses_code_and_original_device(self):
+        from app.main import Login, ContinueLogin
+        from instagrapi.exceptions import TwoFactorRequired
+        client = Mock(last_json={})
+        client.login.side_effect = [TwoFactorRequired(), True]
+        self.bot.lock.acquire()
+        with patch.object(self.bot, 'new_client', return_value=client) as factory:
+            self.bot.login(Login(username='bot', password='password'))
+            self.bot.lock.acquire()
+            with patch.object(self.bot, 'activate'):
+                self.bot.login(ContinueLogin(code='123456'), resume=True)
+            factory.assert_called_once()
+        client.login.assert_called_with('bot', 'password', verification_code='123456')
+        client.challenge_bloks_redirect_dismiss.assert_not_called()
+
+    def test_expired_approval_does_not_attempt_login(self):
+        from app.main import Login, ContinueLogin, PendingLogin
+        client = Mock()
+        self.bot.pending = PendingLogin(client, Login(username='bot', password='password'), 0)
+        self.bot.lock.acquire()
+        self.bot.login(ContinueLogin(), resume=True)
+        client.login.assert_not_called()
+        self.assertIsNone(self.bot.pending)
+        self.assertFalse(self.bot.lock.locked())
+
+    def test_unapproved_checkpoint_does_not_activate(self):
+        from app.main import Login, ContinueLogin, PendingLogin
+        from instagrapi.exceptions import ChallengeRequired
+        client = Mock(last_json={'bloks_action': 'com.bloks.www.ig.challenge.redirect.async',
+                                'challenge_context': 'private-context'})
+        client.challenge_bloks_redirect_dismiss.side_effect = ChallengeRequired()
+        self.bot.pending = PendingLogin(client, Login(username='bot', password='password'), float('inf'))
+        self.bot.lock.acquire()
+        with patch.object(self.bot, 'activate') as activate:
+            self.bot.login(ContinueLogin(), resume=True)
+            activate.assert_not_called()
+        client.login.assert_not_called()
+        self.assertIs(self.bot.pending.client, client)
+        self.assertFalse(self.bot.lock.locked())
+
 
 class WebTests(unittest.TestCase):
     def test_admin_and_csrf(self):
@@ -145,6 +207,8 @@ class WebTests(unittest.TestCase):
                 self.assertEqual(client.get('/').status_code, 200)
                 self.assertNotIn('sessionid', client.get('/status').text)
                 self.assertEqual(client.post('/login', json={}).status_code, 403)
+                self.assertEqual(client.post('/continue-login', json={}).status_code, 403)
+                self.assertEqual(client.post('/continue-login', json={}, headers={'X-Bot-Admin': '1'}).status_code, 409)
                 self.assertEqual(client.post('/login', json={}, headers={
                     'X-Bot-Admin': '1', 'Origin': 'https://evil.example'}).status_code, 403)
                 self.assertEqual(client.post('/login', json={}, headers={'X-Bot-Admin': '1'}).status_code, 400)

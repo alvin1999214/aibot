@@ -5,11 +5,12 @@ async function refresh() {
     const data = await response.json();
     document.querySelector('#status').textContent = `${data.state}\n帳號：${data.username || '—'}\n最近錯誤：${data.error || '無'}`;
     document.querySelector('#challenge').hidden = !data.challenge;
+    document.querySelector('#continue-login').hidden = !data.approval;
   } catch (error) {
     document.querySelector('#status').textContent = error.message;
   }
 }
-for (const name of ['login', 'challenge']) {
+for (const name of ['login', 'challenge', 'continue-login']) {
   document.getElementById(name).addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.target;

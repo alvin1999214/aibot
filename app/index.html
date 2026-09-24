@@ -9,9 +9,19 @@
 <form id="login">
 <p><label>Instagram 帳號 <input name="username" autocomplete="username"></label></p>
 <p><label>密碼 <input name="password" type="password" autocomplete="current-password"></label></p>
-<p><label>雙重驗證碼（需要 2FA 時填入後重新登入） <input name="code" autocomplete="one-time-code" inputmode="numeric"></label></p>
-<details><summary>替代方式：匯入已有的 sessionid</summary><p>若帳密登入受阻，可從自己已登入 Instagram 的瀏覽器 Cookie 取得 sessionid。此欄有值時會優先使用它。</p><label>sessionid <input name="sessionid" type="password" autocomplete="off"></label></details>
+<p><label>雙重驗證碼（選填；App 推播核准不需填寫） <input name="code" autocomplete="one-time-code" inputmode="numeric"></label></p>
+<details><summary>替代方式：匯入已有的 sessionid（推播核准後仍失敗時）</summary>
+<p>目前套件沒有推播核准輪詢。可在另一台電腦的瀏覽器登入 instagram.com，並在手機核准該次登入，直到瀏覽器成功進入帳號。</p>
+<ol><li>在已登入 Instagram 的瀏覽器按 F12 開啟開發者工具。</li><li>Chrome／Edge：Application → Cookies → https://www.instagram.com；Firefox：Storage → Cookies。</li><li>找到 sessionid，複製 Value 並貼到下方，再按「登入並啟動 Bot」。</li></ol>
+<p>此欄有值時優先使用，不需再填帳密。sessionid 等同登入憑證，請勿分享。Instagram 也可能拒絕從不同主機使用 Web session。</p>
+<label>sessionid <input name="sessionid" type="password" autocomplete="off"></label></details>
 <p><button type="submit">登入並啟動 Bot</button></p>
+</form>
+<form id="continue-login" hidden>
+<h2>繼續驗證登入</h2>
+<p>請先在 Instagram App 核准這次登入，再按下方按鈕。不需重新輸入帳密；原登入狀態保留 10 分鐘，重啟服務會清除。</p>
+<label>驗證碼（僅 Instagram 要求時填寫） <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,8}"></label>
+<p><button type="submit">已在 Instagram 核准，繼續登入</button></p>
 </form>
 <form id="challenge" hidden><h2>Instagram 安全驗證</h2><label>Email／SMS 驗證碼 <input name="code" inputmode="numeric" autocomplete="one-time-code" required pattern="[0-9]{6,8}"></label> <button type="submit">送出驗證碼</button></form>
 <p id="result" role="status"></p>

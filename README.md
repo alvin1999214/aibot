@@ -25,7 +25,9 @@ docker compose up -d --build
 
 開啟 `http://主機IP:8001`（主機本機也可用 http://localhost:8001），以 `admin` 和 `ADMIN_PASSWORD` 通過瀏覽器管理頁登入，再填入 **Bot 的 Instagram 帳密**。Session 會自動取得並保存在 Docker volume，Bot 隨即啟動。密碼不寫入磁碟；token 不回傳前端。
 
-- 若出現雙重驗證要求，重新填入帳密及當下 2FA 驗證碼後送出。
+- 若手機收到登入推播，先在 Instagram App 按 Approve，再於管理頁按「已在 Instagram 核准，繼續登入」。程式保留同一個 client、裝置識別及驗證狀態，對支援的 Bloks checkpoint 執行核准後確認。
+- **目前 instagrapi 的 2FA 流程沒有推播核准輪詢**，所以這個按鈕是沿用原狀態重試，並不保證支援所有推播 2FA。若仍出現 `TwoFactorRequired`，請改用下述瀏覽器 sessionid 匯入，或填入 Instagram 提供的驗證碼。
+- 原登入狀態與帳密僅暫存記憶體 10 分鐘，成功登入或逾時後解除保留；重啟會清除。驗證碼可填在「繼續驗證登入」表單，不需重填帳密。
 - 若 Instagram 發送 Email／SMS challenge，頁面會出現驗證碼表單，請於 5 分鐘內提交。
 - 部分 challenge 必須到官方 Instagram App 完成，之後再試登入；不會繞過平台驗證。
 - 也可展開替代登入，輸入自己已登入 Instagram 瀏覽器 Cookie 中的 `sessionid`。Instagram 可能拒絕 Web session；帳密登入產生的完整 session 通常更合適。
