@@ -57,7 +57,7 @@ Bot 開始處理模型請求後，會透過 Instagram 即時連線在該群組�
 | `PORT` | `8001` | 主機對外管理頁埠 |
 | `ALLOWED_HOSTS` | `*` | 允許的主機 IP／域名，逗號分隔、不含埠；限制時請加入 `127.0.0.1` 供健康檢查使用 |
 | `POLL_SECONDS` | `20` | 輪詢間隔，最低 10 秒；錯誤時退避至最多 300 秒 |
-| `CONTEXT_MESSAGES` | `40` | 每個群組讀取及模型使用的近期訊息數，最高 200 |
+| `CONTEXT_MESSAGES` | `10` | 每個群組讀取及模型使用的近期訊息數，最高 10；設定更高仍會限制為 10 |
 | `CONTEXT_CHARS` | `16000` | 文字內容字元上限，不是 token 上限 |
 | `THREAD_LIMIT` | `50` | 每轮讀取最近的對話數，包含私訊；只處理其中群組 |
 | `SYSTEM_PROMPT` | 繁體中文助理 | 模型的 system prompt |
@@ -96,7 +96,7 @@ Bot 會讀取目前群組成員的 username、顯示名稱及頭像網址，因�
 
 使用 `docker compose logs -f --tail=100 instagram-bot` 查看對話輸入與輸出。`conversation.input` 包含觸發回覆的文字、發送者及送給模型的群組上下文；`conversation.output` 包含實際準備發送的回覆，`status=sent` 表示發送成功，`status=uncertain` 表示發送結果不明。模型失敗會記錄 `conversation.model_failed`。每筆紀錄帶有時間、帳號、群組 ID 和觸發訊息 ID，方便配對追蹤；已處理的提及不會因輪詢重複記錄，模型失敗重試則會再次記錄輸入。對話 logs 包含聊天原文，請限制存取；不會記錄 API key 或 Session 設定。
 
-`bot-data` volume 保存 `/data/session.json`、SQLite 上下文和處理紀錄。Session 等同登入憑證，請保護備份。每群文字保留最多 `CONTEXT_MESSAGES × 3` 筆（成功處理後清理），去重 ID 長期保留。管理頁綁定 `0.0.0.0`，可從其他電腦透過主機 IP 存取，並保留管理密碼與跨站請求防護。主機防火牆需允許管理電腦連入 TCP `8001`（或自訂 `PORT`）。HTTP 不加密登入資料，請在可信任內網使用；若跨網際網路，請搭配 HTTPS。
+`bot-data` volume 保存 `/data/session.json`、SQLite 上下文和處理紀錄。Session 等同登入憑證，請保護備份。每群文字最多保留 `CONTEXT_MESSAGES` 筆（最高 10，成功處理後清理），去重 ID 長期保留。管理頁綁定 `0.0.0.0`，可從其他電腦透過主機 IP 存取，並保留管理密碼與跨站請求防護。主機防火牆需允許管理電腦連入 TCP `8001`（或自訂 `PORT`）。HTTP 不加密登入資料，請在可信任內網使用；若跨網際網路，請搭配 HTTPS。
 
 ```bash
 docker compose logs -f --tail=100

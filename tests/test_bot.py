@@ -52,6 +52,12 @@ class BotTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_context_message_count_is_capped_at_ten(self):
+        from app.main import Bot
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                'DATA_DIR': directory, 'CONTEXT_MESSAGES': '50'}):
+            self.assertEqual(Bot().count, 10)
+
     def message(self, mid, uid, text, ts):
         return NS(id=mid, user_id=uid, text=text, timestamp=datetime.fromtimestamp(ts, timezone.utc))
 

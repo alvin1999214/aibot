@@ -155,7 +155,7 @@ class Bot:
         self.error = None
         self.username = None
         self.poll = max(10, int(os.getenv('POLL_SECONDS', '20')))
-        self.count = max(1, min(200, int(os.getenv('CONTEXT_MESSAGES', '40'))))
+        self.count = max(1, min(10, int(os.getenv('CONTEXT_MESSAGES', '10'))))
         self.chars = max(1000, int(os.getenv('CONTEXT_CHARS', '16000')))
         self.limit = max(1, int(os.getenv('THREAD_LIMIT', '50')))
 
@@ -483,7 +483,7 @@ class Bot:
                 conversation_log('conversation.output', **details, **output,
                                  status='sent', sent_message_id=str(sent.id))
                 self.store.add(account, tid, str(sent.id), sent.timestamp.timestamp(), account, answer_text)
-            self.store.prune(account, tid, self.count * 3)
+            self.store.prune(account, tid, self.count)
 
     def run(self):
         with self.lock:
