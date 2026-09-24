@@ -1,4 +1,5 @@
 import hmac
+import json
 import logging
 import os
 from pathlib import Path
@@ -19,6 +20,17 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .core import Store, mentioned
 
 log = logging.getLogger('bot')
+log.setLevel(logging.INFO)
+if not log.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s'))
+    log.addHandler(handler)
+log.propagate = False
+
+
+def conversation_log(event, **fields):
+    # Keep Unicode readable and escape newlines so each event occupies one log line.
+    log.info('%s', json.dumps({'event': event, **fields}, ensure_ascii=False))
 
 
 class Bot:
@@ -121,16 +133,27 @@ class Bot:
                         or self.store.done(account, tid, mid)):
                     continue
                 context = self.store.context(account, tid, ts, self.count, self.chars)
-                answer = self.reply(context)
+                details = {'account': account, 'thread_id': tid, 'message_id': mid}
+                conversation_log('conversation.input', **details,
+                                 sender_id=str(message.user_id), text=message.text, context=context)
+                try:
+                    answer = self.reply(context)
+                except Exception as exc:
+                    conversation_log('conversation.model_failed', **details, error=type(exc).__name__)
+                    raise
                 # Claim before sending: uncertain network outcomes must not cause duplicate replies.
                 if not self.store.claim(account, tid, mid):
                     continue
                 try:
                     sent = client.direct_send(answer, thread_ids=[int(tid)])
-                except Exception:
+                except Exception as exc:
                     self.store.finish(account, tid, mid, 'uncertain')
+                    conversation_log('conversation.output', **details, text=answer,
+                                     status='uncertain', error=type(exc).__name__)
                     raise
                 self.store.finish(account, tid, mid, 'sent')
+                conversation_log('conversation.output', **details, text=answer,
+                                 status='sent', sent_message_id=str(sent.id))
                 self.store.add(account, tid, str(sent.id), sent.timestamp.timestamp(), account, answer)
             self.store.prune(account, tid, self.count * 3)
 

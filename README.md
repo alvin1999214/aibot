@@ -69,6 +69,8 @@ docker compose up -d --build --force-recreate
 
 ## 資料與維護
 
+使用 `docker compose logs -f --tail=100 instagram-bot` 查看對話輸入與輸出。`conversation.input` 包含觸發回覆的文字、發送者及送給模型的群組上下文；`conversation.output` 包含實際準備發送的回覆，`status=sent` 表示發送成功，`status=uncertain` 表示發送結果不明。模型失敗會記錄 `conversation.model_failed`。每筆紀錄帶有時間、帳號、群組 ID 和觸發訊息 ID，方便配對追蹤；已處理的提及不會因輪詢重複記錄，模型失敗重試則會再次記錄輸入。對話 logs 包含聊天原文，請限制存取；不會記錄 API key 或 Session 設定。
+
 `bot-data` volume 保存 `/data/session.json`、SQLite 上下文和處理紀錄。Session 等同登入憑證，請保護備份。每群文字保留最多 `CONTEXT_MESSAGES × 3` 筆（成功處理後清理），去重 ID 長期保留。管理頁綁定 `0.0.0.0`，可從其他電腦透過主機 IP 存取，並保留管理密碼與跨站請求防護。主機防火牆需允許管理電腦連入 TCP `8001`（或自訂 `PORT`）。HTTP 不加密登入資料，請在可信任內網使用；若跨網際網路，請搭配 HTTPS。
 
 ```bash
