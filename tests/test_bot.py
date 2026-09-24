@@ -120,6 +120,25 @@ class BotTests(unittest.TestCase):
         self.bot.tick()
         self.bot.client.direct_send.assert_called_once()
 
+    def test_typing_indicator_wraps_model_work(self):
+        self.bot.client.direct_threads.return_value = [NS(id='100', is_group=True,
+            messages=[self.message('1', 20, '@bot hello', 102)])]
+        with patch('app.main.typing_activity') as typing:
+            self.bot.tick()
+        typing.assert_called_once_with(self.bot.client, '100')
+        typing.return_value.__enter__.assert_called_once()
+        typing.return_value.__exit__.assert_called_once()
+
+    def test_typing_activity_publishes_start_and_stop(self):
+        from app.main import typing_activity
+        realtime = Mock(connected=True)
+        client = Mock()
+        client.realtime_client.return_value = realtime
+        with typing_activity(client, '100'):
+            realtime.direct_indicate_activity.assert_called_with('100', is_active=True)
+        realtime.direct_indicate_activity.assert_called_with('100', is_active=False)
+        realtime.disconnect.assert_called_once()
+
     def test_model_request(self):
         from app.main import Bot
         with patch.dict(os.environ, {'BASE_URL': 'https://model.example/v1/', 'API_KEY': 'secret', 'MODEL': 'test-model'}):

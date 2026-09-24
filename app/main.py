@@ -6,7 +6,7 @@ from pathlib import Path
 import threading
 import tempfile
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -88,6 +88,49 @@ def raise_for_model_status(response):
         body = response.text[:2000].replace('\r', '\\r').replace('\n', '\\n')
         log.warning('Model API rejected request: status=%s body=%s', response.status_code, body)
         raise
+
+
+@contextmanager
+def typing_activity(client, thread_id):
+    stop = threading.Event()
+    ready = threading.Event()
+
+    def publish():
+        realtime = None
+        try:
+            # Use an independent realtime client so the polling client remains
+            # exclusively owned by the main Bot worker.
+            realtime = client.realtime_client()
+            realtime.connect()
+            while not stop.is_set():
+                realtime.direct_indicate_activity(thread_id, is_active=True)
+                ready.set()
+                if stop.wait(5):
+                    break
+        except Exception as exc:
+            ready.set()
+            log.warning('Instagram typing indicator unavailable: %s', type(exc).__name__)
+        finally:
+            if realtime is not None:
+                try:
+                    if realtime.connected:
+                        realtime.direct_indicate_activity(thread_id, is_active=False)
+                except Exception:
+                    pass
+                try:
+                    realtime.disconnect()
+                except Exception:
+                    pass
+
+    worker = threading.Thread(target=publish, name='instagram-typing', daemon=True)
+    worker.start()
+    # Usually completes immediately; never make model work depend on MQTT.
+    ready.wait(timeout=1)
+    try:
+        yield
+    finally:
+        stop.set()
+        worker.join(timeout=2)
 
 
 class Bot:
@@ -302,7 +345,8 @@ class Bot:
                                  sender_id=str(message.user_id), text=message.text, context=context,
                                  reply_to_message_id=str(replied_to.id) if replied_to else None)
                 try:
-                    answer = self.reply(context)
+                    with typing_activity(client, tid):
+                        answer = self.reply(context)
                 except Exception as exc:
                     conversation_log('conversation.model_failed', **details, error=type(exc).__name__)
                     raise
