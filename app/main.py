@@ -54,6 +54,8 @@ def requests_image(text):
         '生成圖片', '生成一張', '產生圖片', '產生一張', '生圖', '畫一張', '畫張',
         '繪製', '做一張圖', '做張圖', 'generate an image', 'generate image',
         'create an image', 'create image', 'draw an image', 'draw a picture',
+        '改圖', '修圖', '修改圖片', '修改照片', '修改這張', '把這張', '將這張',
+        'edit image', 'edit this', 'edit the photo', '重畫',
     ))
 
 
@@ -62,6 +64,33 @@ def requests_profile_reference(text):
     return any(marker in lowered for marker in (
         '頭像', '大頭貼', '個人照片', 'profile pic', 'profile picture', 'avatar',
     ))
+
+
+def refers_to_image(text):
+    return any(marker in text.casefold() for marker in (
+        '圖片', '照片', '這張', '那張', '上圖', '剛才的圖', '改圖', '修圖',
+        '這個改', '改成', '換成', '改一下', 'image', 'photo', 'picture', 'edit',
+    ))
+
+
+def message_image_url(message):
+    # Only ordinary still photos; never treat a video thumbnail as an uploaded photo.
+    media = getattr(message, 'media', None) or getattr(message, 'media_share', None)
+    if media is not None and getattr(media, 'media_type', None) == 1:
+        url = getattr(media, 'thumbnail_url', None)
+        return str(url) if url else None
+    return None
+
+
+def image_parts(references):
+    parts = []
+    for label, jpeg in references:
+        parts.extend([
+            {'type': 'text', 'text': label},
+            {'type': 'image_url', 'image_url': {
+                'url': 'data:image/jpeg;base64,' + base64.b64encode(jpeg).decode('ascii')}},
+        ])
+    return parts
 
 
 def requests_web_search(text):
@@ -206,13 +235,14 @@ class Bot:
         finally:
             self.lock.release()
 
-    def reply(self, messages, participants=None, sender_id=None):
+    def reply(self, messages, participants=None, sender_id=None, source_images=None):
         participants = participants or []
+        source_images = source_images or []
         system = os.getenv('SYSTEM_PROMPT', '請用繁體中文簡潔回答群組問題。')
         web_search = os.getenv('WEB_SEARCH', '').strip().lower() in {'1', 'true', 'yes', 'on'}
         image_model = os.getenv('IMAGE_MODEL', '').strip()
         latest = latest_user_text(messages)
-        if web_search and requests_web_search(latest) and not requests_image(latest):
+        if web_search and requests_web_search(latest) and not requests_image(latest) and not source_images:
             return self.search_web(messages, latest[:4000])
         if web_search:
             if image_model:
@@ -236,10 +266,15 @@ class Bot:
             payload['tools'] = [{'google_search': {}}]
         if image_model:
             payload['messages'][0]['content'] += (
-                '\n當最新使用者要求生成或畫圖片時，呼叫 generate_image，'
+                '\n當最新使用者要求生成、畫圖、修改、換背景或依照圖片變化時，呼叫 generate_image，'
                 '把上下文整理為完整的圖片描述。工具會直接把圖片發送至群組；'
                 '一般聊天不需呼叫工具。每次最多生成一張圖片。'
-                '若要求根據群組成員頭像生成，必須在 reference_username 填入該成員的精確 username。')
+                '若描繪群組成員，reference_usernames 必須包含所有人物的精確 username，不能只填一人。'
+                '多人必須各自出現，保留各人的外觀，不可合併成一人；排除僅用於呼叫你的 bot 標註。'
+                '若已附上來源圖片，修改要求必須以來源圖片為基礎，保留未要求更動的內容。'
+                '若使用者要修改既有圖片但沒有提供來源圖片，請要求重新上傳或回覆該圖片，'
+                '不可只憑先前提示詞重畫並聲稱已修改原圖。'
+                '只問圖片內容時回答問題，不必生成。')
             member_descriptions = [
                 f"@{member['username']} ({member.get('full_name') or '未設定名稱'})"
                 for member in participants if member.get('username')
@@ -255,6 +290,12 @@ class Bot:
             # a separate request containing only the server-side search tool.
             payload['tools'] = ([WEB_SEARCH_TOOL] if web_search else []) + [IMAGE_TOOL]
             payload['tool_choice'] = 'auto'
+        if source_images:
+            payload['messages'] = [dict(item) for item in payload['messages']]
+            for item in reversed(payload['messages']):
+                if item['role'] == 'user':
+                    item['content'] = [{'type': 'text', 'text': item['content']}] + image_parts(source_images)
+                    break
         with httpx.Client(timeout=90) as http:
             response = http.post(os.environ['BASE_URL'].rstrip('/') + '/chat/completions',
                 headers={'Authorization': 'Bearer ' + os.environ['API_KEY']},
@@ -273,24 +314,51 @@ class Bot:
                 prompt = arguments.get('prompt')
                 if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
                     raise ValueError('Invalid image prompt')
-                reference_username = arguments.get('reference_username')
-                if reference_username is not None and not isinstance(reference_username, str):
-                    raise ValueError('Invalid reference username')
-                reference = None
-                if reference_username or requests_profile_reference(latest):
-                    reference = self.resolve_profile_reference(
-                        latest, participants, sender_id, reference_username)
-                    if reference is None:
-                        target = reference_username.strip().lstrip('@') if reference_username else '該使用者'
-                        return f'找不到群組成員 @{target} 的頭像，請確認 username 後再試一次。'
-                    if not reference.get('profile_pic_url'):
-                        return f"群組成員 @{reference['username']} 暫時沒有可用的頭像。"
+                usernames = arguments.get('reference_usernames', [])
+                legacy = arguments.get('reference_username')
+                if (not isinstance(usernames, list) or
+                        any(not isinstance(name, str) or not name.strip() for name in usernames) or
+                        (legacy is not None and not isinstance(legacy, str))):
+                    raise ValueError('Invalid reference usernames')
+                usernames = list(usernames)
+                if legacy:
+                    usernames.append(legacy)
+                # Recover all explicitly tagged members even if the model only supplied one.
+                # A supplied photo is the primary source unless avatars are explicitly requested.
+                if not source_images or requests_profile_reference(latest):
+                    usernames.extend(member['username'] for member in participants
+                                     if member.get('username') and mentioned(latest, member['username'])
+                                     and member['username'].casefold() != (self.username or '').casefold())
+                if requests_profile_reference(latest) and any(word in latest.casefold() for word in (
+                        '我的', '我嘅', 'my ')):
+                    sender = next((m for m in participants if m.get('id') == str(sender_id)), None)
+                    if sender:
+                        usernames.append(sender['username'])
+                usernames = list(dict.fromkeys(name.strip().lstrip('@').casefold() for name in usernames))
+                if len(usernames) > 10:
+                    return '一次最多可使用 10 位群組成員的頭像，請減少人數後再試。'
+                references = list(source_images)
+                for username in usernames:
+                    member = next((m for m in participants
+                                   if m.get('username', '').casefold() == username), None)
+                    if member is None:
+                        return f'找不到群組成員 @{username} 的頭像，請確認 username 後再試一次。'
+                    if not member.get('profile_pic_url'):
+                        return f'群組成員 @{username} 暫時沒有可用的頭像。'
                     try:
-                        reference_image = self.download_profile_picture(reference['profile_pic_url'])
+                        jpeg = self.download_profile_picture(member['profile_pic_url'])
                     except Exception as exc:
                         log.warning('Profile picture download failed: %s', type(exc).__name__)
-                        return f"暫時無法取得 @{reference['username']} 的頭像，請稍後再試。"
-                    return self.generate_image(prompt.strip(), reference_image=reference_image)
+                        return f'暫時無法取得 @{username} 的頭像，請稍後再試。'
+                    references.append((f'人物 @{username} 的頭像參考', jpeg))
+                if requests_profile_reference(latest) and not references:
+                    return '找不到指定的群組成員頭像，請標註要參考的成員。'
+                if references:
+                    prompt = prompt.strip() + '\n使用者原始要求：' + latest
+                    if usernames:
+                        prompt += ('\n人物參考對照：' + '、'.join('@' + name for name in usernames)
+                                   + '。依要求描繪每位人物，各自保留可辨識特徵，不可遺漏或合併人物。')
+                    return self.generate_image(prompt, references=references)
                 return self.generate_image(prompt.strip())
             if function['name'] == 'search_web' and web_search:
                 query = arguments.get('query')
@@ -302,24 +370,6 @@ class Bot:
         if not isinstance(text, str) or not text.strip():
             raise ValueError('Empty model response')
         return text.strip()[:900]
-
-    def resolve_profile_reference(self, latest, participants, sender_id, requested_username=None):
-        by_username = {
-            member.get('username', '').casefold(): member
-            for member in participants if member.get('username')
-        }
-        lowered = latest.casefold()
-        if any(marker in lowered for marker in (
-                '我的頭像', '我嘅頭像', '我的大頭貼', 'my avatar', 'my profile pic',
-                'my profile picture')):
-            return next((member for member in participants
-                         if member.get('id') == str(sender_id)), None)
-        for username, member in by_username.items():
-            if f'@{username}' in lowered and username != (self.username or '').casefold():
-                return member
-        if requested_username and requested_username.strip():
-            return by_username.get(requested_username.strip().lstrip('@').casefold())
-        return None
 
     def download_profile_picture(self, profile_pic_url):
         current = str(profile_pic_url)
@@ -379,18 +429,17 @@ class Bot:
             raise ValueError('Empty web search response')
         return text.strip()[:900]
 
-    def generate_image(self, prompt, reference_image=None):
-        content = prompt
+    def generate_image(self, prompt, reference_image=None, references=None):
+        references = list(references or [])
         if reference_image is not None:
-            encoded = base64.b64encode(reference_image).decode('ascii')
-            content = [
-                {'type': 'text', 'text': (
-                    prompt + '\nUse the provided profile picture as a visual reference. '
-                    'Preserve recognizable visual traits while following the requested transformation.')},
-                {'type': 'image_url', 'image_url': {
-                    'url': 'data:image/jpeg;base64,' + encoded,
-                }},
-            ]
+            references.append(('頭像參考', reference_image))
+        content = prompt
+        if references:
+            content = [{'type': 'text', 'text': (
+                prompt + '\nUse each labeled reference for its corresponding person or source image. '
+                'For edits, modify the source image and preserve details not requested to change. '
+                'Keep distinct people recognizable; do not merge their identities.')}]
+            content.extend(image_parts(references))
         with httpx.Client(timeout=180) as http:
             response = http.post(os.environ['BASE_URL'].rstrip('/') + '/chat/completions',
                 headers={'Authorization': 'Bearer ' + os.environ['API_KEY']},
@@ -414,6 +463,19 @@ class Bot:
                 path.write_bytes(answer.jpeg)
                 return client.direct_send_photo(path, thread_ids=[int(tid)])
         return client.direct_send(answer, thread_ids=[int(tid)])
+
+    def source_image(self, account, tid, message):
+        ts = message.timestamp.timestamp()
+        current = self.store.image(account, tid, ts, mid=str(message.id))
+        if current:
+            return current
+        reply = getattr(message, 'reply', None)
+        if reply is not None:
+            # An explicit reply always takes precedence over a recent unrelated upload.
+            return self.store.image(account, tid, ts, mid=str(reply.id))
+        if refers_to_image(message.text or ''):
+            return self.store.image(account, tid, ts, sender=str(message.user_id))
+        return None
 
     def tick(self):
         client = self.client
@@ -439,6 +501,17 @@ class Bot:
             messages = sorted(thread.messages, key=lambda m: (m.timestamp, str(m.id)))
             for message in messages:
                 body = message.text or ''
+                url = message_image_url(message)
+                if url:
+                    self.store.add_image(account, tid, str(message.id), message.timestamp.timestamp(),
+                                         str(message.user_id), url=url)
+                    body = (body + '\n[圖片附件]').strip()
+                replied_to = getattr(message, 'reply', None)
+                reply_url = message_image_url(replied_to)
+                if reply_url:
+                    self.store.add_image(account, tid, str(replied_to.id),
+                                         replied_to.timestamp.timestamp(), str(replied_to.user_id),
+                                         url=reply_url)
                 if body:
                     self.store.add(account, tid, str(message.id), message.timestamp.timestamp(),
                                    str(message.user_id), body)
@@ -461,8 +534,21 @@ class Bot:
                                  reply_to_message_id=str(replied_to.id) if replied_to else None)
                 try:
                     with typing_activity(client, tid):
-                        answer = self.reply(context, participants=participants,
-                                            sender_id=str(message.user_id))
+                        source = self.source_image(account, tid, message)
+                        source_images = []
+                        source_error = False
+                        if source:
+                            try:
+                                jpeg = source['jpeg'] or self.download_profile_picture(source['url'])
+                                source_images = [(f"來源圖片（訊息 {source['id']}）", jpeg)]
+                            except Exception as exc:
+                                log.warning('Source image download failed: %s', type(exc).__name__)
+                                source_error = True
+                        if source_error:
+                            answer = '無法讀取這張圖片，可能已過期。請重新上傳圖片，再 @我說明要修改的內容。'
+                        else:
+                            answer = self.reply(context, participants=participants,
+                                                sender_id=str(message.user_id), source_images=source_images)
                 except Exception as exc:
                     conversation_log('conversation.model_failed', **details, error=type(exc).__name__)
                     raise
@@ -483,6 +569,9 @@ class Bot:
                 conversation_log('conversation.output', **details, **output,
                                  status='sent', sent_message_id=str(sent.id))
                 self.store.add(account, tid, str(sent.id), sent.timestamp.timestamp(), account, answer_text)
+                if is_image:
+                    self.store.add_image(account, tid, str(sent.id), sent.timestamp.timestamp(),
+                                         account, jpeg=normalize_reference_image(answer.jpeg))
             self.store.prune(account, tid, self.count)
 
     def run(self):

@@ -13,9 +13,10 @@ IMAGE_TOOL = {
     'function': {
         'name': 'generate_image',
         'description': ('Generate and send one image to this Instagram group. Use only when the latest '
-                        'user asks to create/draw an image. Resolve references using the conversation '
+                        'user asks to create, draw, edit or transform an image. Resolve references using the conversation '
                         'and supply a complete image prompt. When the request is based on a group '
-                        "member's avatar, set reference_username to that exact group username."),
+                        "members' appearances, include ALL of them in reference_usernames. "
+                        'Use supplied photos as the source for edits; preserve people and details not requested to change.'),
         'parameters': {
             'type': 'object',
             'properties': {
@@ -23,6 +24,10 @@ IMAGE_TOOL = {
                 'reference_username': {
                     'type': 'string',
                     'description': 'Exact Instagram username whose group profile picture should be used as reference.',
+                },
+                'reference_usernames': {
+                    'type': 'array', 'items': {'type': 'string'},
+                    'description': 'All group members depicted, one exact username per person. Exclude the bot.',
                 },
             },
             'required': ['prompt'],

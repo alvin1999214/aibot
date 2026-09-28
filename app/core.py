@@ -19,6 +19,9 @@ class Store:
                 CREATE TABLE IF NOT EXISTS jobs (
                     account TEXT, thread TEXT, id TEXT, status TEXT,
                     PRIMARY KEY(account, thread, id));
+                CREATE TABLE IF NOT EXISTS images (
+                    account TEXT, thread TEXT, id TEXT, ts REAL, sender TEXT,
+                    url TEXT, jpeg BLOB, PRIMARY KEY(account, thread, id));
             ''')
 
     @contextmanager
@@ -52,6 +55,21 @@ class Store:
             return db.execute('SELECT 1 FROM jobs WHERE account=? AND thread=? AND id=?',
                               (account, thread, mid)).fetchone() is not None
 
+    def add_image(self, account, thread, mid, ts, sender, url=None, jpeg=None):
+        with self.connect() as db:
+            db.execute('INSERT INTO images VALUES (?,?,?,?,?,?,?) '
+                       'ON CONFLICT(account,thread,id) DO UPDATE SET '
+                       'url=COALESCE(excluded.url,images.url), jpeg=COALESCE(excluded.jpeg,images.jpeg)',
+                       (account, thread, mid, ts, sender, url, jpeg))
+
+    def image(self, account, thread, until, mid=None, sender=None):
+        with self.connect() as db:
+            row = db.execute('SELECT id,url,jpeg FROM images WHERE account=? AND thread=? AND ts<=? '
+                             'AND (? IS NULL OR id=?) AND (? IS NULL OR sender=?) '
+                             'ORDER BY ts DESC,id DESC LIMIT 1',
+                             (account, thread, until, mid, mid, sender, sender)).fetchone()
+        return dict(zip(('id', 'url', 'jpeg'), row)) if row else None
+
     def claim(self, account, thread, mid):
         with self.connect() as db:
             return db.execute('INSERT OR IGNORE INTO jobs VALUES (?,?,?,?)',
@@ -79,6 +97,9 @@ class Store:
 
     def prune(self, account, thread, keep):
         with self.connect() as db:
+            db.execute('DELETE FROM images WHERE account=? AND thread=? AND id NOT IN '
+                       '(SELECT id FROM messages WHERE account=? AND thread=? '
+                       'ORDER BY ts DESC,id DESC LIMIT ?)', (account, thread, account, thread, keep))
             db.execute('DELETE FROM messages WHERE account=? AND thread=? AND id NOT IN '
                        '(SELECT id FROM messages WHERE account=? AND thread=? ORDER BY ts DESC LIMIT ?)',
                        (account, thread, account, thread, keep))
