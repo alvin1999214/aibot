@@ -2,12 +2,14 @@ import hmac
 import base64
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import threading
 import tempfile
 import time
 from contextlib import asynccontextmanager, contextmanager
+from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -126,6 +128,38 @@ def raise_for_model_status(response):
         body = response.text[:2000].replace('\r', '\\r').replace('\n', '\\n')
         log.warning('Model API rejected request: status=%s body=%s', response.status_code, body)
         raise
+
+
+def model_retry_seconds(response, now):
+    """Prefer structured cooldown information; never guess from truncated upstream text."""
+    delays = []
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    error = body.get('error', {}) if isinstance(body, dict) else {}
+    if isinstance(error, dict):
+        delays.append(error.get('reset_seconds'))
+    retry_after = response.headers.get('Retry-After')
+    if retry_after:
+        try:
+            delays.append(float(retry_after))
+        except ValueError:
+            try:
+                delays.append(parsedate_to_datetime(retry_after).timestamp() - now)
+            except (ValueError, TypeError, OverflowError):
+                pass
+    valid = []
+    for delay in delays:
+        if isinstance(delay, bool):
+            continue
+        try:
+            seconds = float(delay)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(seconds) and seconds > 0:
+            valid.append(seconds)
+    return max(valid) if valid else 60
 
 
 @contextmanager
@@ -314,6 +348,9 @@ class Bot:
                 prompt = arguments.get('prompt')
                 if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
                     raise ValueError('Invalid image prompt')
+                cooldown = self.image_cooldown_notice()
+                if cooldown:
+                    return cooldown
                 usernames = arguments.get('reference_usernames', [])
                 legacy = arguments.get('reference_username')
                 if (not isinstance(usernames, list) or
@@ -429,7 +466,22 @@ class Bot:
             raise ValueError('Empty web search response')
         return text.strip()[:900]
 
+    def image_cooldown_notice(self):
+        until = self.store.model_cooldown(os.environ['BASE_URL'].rstrip('/'),
+                                          os.environ['IMAGE_MODEL'])
+        remaining = until - time.time()
+        if remaining <= 0:
+            return None
+        minutes = max(1, math.ceil(remaining / 60))
+        hours, minutes = divmod(minutes, 60)
+        wait = (f'{hours} 小時 ' if hours else '') + (f'{minutes} 分鐘' if minutes else '')
+        return (f'圖片模型目前額度不足或受到限流，約需等待 {wait.strip()}。'
+                '這次沒有生成圖片；請稍後重新提出要求。')
+
     def generate_image(self, prompt, reference_image=None, references=None):
+        cooldown = self.image_cooldown_notice()
+        if cooldown:
+            return cooldown
         references = list(references or [])
         if reference_image is not None:
             references.append(('頭像參考', reference_image))
@@ -452,7 +504,18 @@ class Bot:
                         'image_size': os.getenv('IMAGE_SIZE', '1K'),
                     },
                 })
-            raise_for_model_status(response)
+            try:
+                raise_for_model_status(response)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 429:
+                    raise
+                now = time.time()
+                delay = model_retry_seconds(exc.response, now)
+                self.store.set_model_cooldown(os.environ['BASE_URL'].rstrip('/'),
+                                              os.environ['IMAGE_MODEL'], now + delay)
+                log.warning('Image model cooldown: model=%s retry_after_seconds=%s',
+                            os.environ['IMAGE_MODEL'], math.ceil(delay))
+                return self.image_cooldown_notice()
             message = response.json()['choices'][0]['message']
         return GeneratedImage(prompt=prompt, jpeg=decode_image(message))
 

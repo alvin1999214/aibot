@@ -22,6 +22,9 @@ class Store:
                 CREATE TABLE IF NOT EXISTS images (
                     account TEXT, thread TEXT, id TEXT, ts REAL, sender TEXT,
                     url TEXT, jpeg BLOB, PRIMARY KEY(account, thread, id));
+                CREATE TABLE IF NOT EXISTS model_cooldowns (
+                    endpoint TEXT, model TEXT, until REAL NOT NULL,
+                    PRIMARY KEY(endpoint, model));
             ''')
 
     @contextmanager
@@ -61,6 +64,18 @@ class Store:
                        'ON CONFLICT(account,thread,id) DO UPDATE SET '
                        'url=COALESCE(excluded.url,images.url), jpeg=COALESCE(excluded.jpeg,images.jpeg)',
                        (account, thread, mid, ts, sender, url, jpeg))
+
+    def model_cooldown(self, endpoint, model):
+        with self.connect() as db:
+            row = db.execute('SELECT until FROM model_cooldowns WHERE endpoint=? AND model=?',
+                             (endpoint, model)).fetchone()
+        return row[0] if row else 0
+
+    def set_model_cooldown(self, endpoint, model, until):
+        with self.connect() as db:
+            db.execute('INSERT INTO model_cooldowns VALUES (?,?,?) '
+                       'ON CONFLICT(endpoint,model) DO UPDATE SET until=MAX(until,excluded.until)',
+                       (endpoint, model, until))
 
     def image(self, account, thread, until, mid=None, sender=None):
         with self.connect() as db:
